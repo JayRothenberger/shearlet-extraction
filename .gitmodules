@@ -1,0 +1,3 @@
+[submodule "coshnet"]
+	path = coshnet
+	url = https://github.com/Ujjawal-K-Panchal/coshnet
