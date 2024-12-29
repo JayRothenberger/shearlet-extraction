@@ -1,0 +1,7 @@
+
+*.jpg
+/caltech101
+__pycache__/complex_resnet.cpython-39.pyc
+/caltech256
+/food-101
+food-101.tar.gz
