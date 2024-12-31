@@ -45,6 +45,37 @@ class ComplexMaxPool2d(torch.nn.Module):
         return pooled.type(input_type)
 
 
+class ComplexAdaptiveMaxPool2d(torch.nn.Module):
+    """
+    computes the adaptive max pool in the complex plane
+    """
+    def __init__(self, output_size, mode="magnitude"):
+        super(ComplexAdaptiveMaxPool2d, self).__init__()
+        self.modes = ["magnitude", "conjugate", "absolute"]
+        assert mode in self.modes
+        self.mode = mode
+        self.output_size = output_size
+
+    def forward(self, x):
+        input_type = x.dtype
+        # TODO: fix by separating into real and imaginary for gather (we can gather imaginary only and use the real result from the max pool op)
+        x = x.type(torch.complex64) # gather not supported for complex half
+        if self.mode == "magnitude":
+            # take the maximum of the real part and use the corresponding imaginary part
+            vals, inds = torch.nn.functional.adaptive_max_pool2d(x.real, self.output_size, return_indices=True)
+            pooled = torch.gather(x.flatten(-2), -1, inds.flatten(-2)).reshape(vals.shape)
+        elif self.mode == "absolute":
+            # compute the max pool over the absolute value
+            vals, inds = torch.nn.functional.adaptive_max_pool2d(torch.abs(x).real, self.output_size, return_indices=True)
+            pooled = torch.gather(x.flatten(-2), -1, inds.flatten(-2)).reshape(vals.shape)
+        elif self.mode == "conjugate":
+            # compute the max pool over the complex conjugate
+            vals, inds = torch.nn.functional.adaptive_max_pool2d(torch.conj_physical(x).real, self.output_size, return_indices=True)
+            pooled = torch.gather(x.flatten(-2), -1, inds.flatten(-2)).reshape(vals.shape)
+
+        return pooled.type(input_type)
+
+
 def batch_cov(points):
     """
     for our purposes we want to batch the covariance along the channel dimension (originally 1) and compute it over the batch dimension (originally 0)
@@ -255,3 +286,22 @@ class CReLU(torch.nn.Module):
 
     def forward(self, x):
         return torch.complex(self.rReLU(x.real), self.iReLU(x.imag))
+    
+class RReLU(torch.nn.Module):
+
+    def __init__(self, **kwargs):
+        super(RReLU, self).__init__()
+        self.rReLU = torch.nn.ReLU(**kwargs)
+
+    def forward(self, x):
+        return torch.complex(self.rReLU(x.real), x.imag)
+
+class SinReLU(torch.nn.Module):
+
+    def __init__(self, **kwargs):
+        super(SinReLU, self).__init__()
+        self.rReLU = torch.nn.ReLU(**kwargs)
+        self.iReLU = torch.nn.ReLU(**kwargs)
+
+    def forward(self, x):
+        return torch.complex(self.rReLU(x.real), torch.sin(x.imag))
