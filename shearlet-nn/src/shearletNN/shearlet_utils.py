@@ -78,7 +78,7 @@ def frequency_coefficients(X, shearlets, patch_size=32):
     # convolution in the time-domain
     X = Xfreq[np.newaxis] * np.conj(shearlets) * shearlets
 
-    X = suppress_square(X, (X.shape[-1] - patch_size) // 2)
+    X = suppress_square(X, (X.shape[-1] - patch_size) // 2, crop=True)
 
     return X
 
@@ -97,7 +97,7 @@ def batched_frequency_coefficients(X, shearlets, patch_size=32):
     # convolution in the time-domain
     X = Xfreq.unsqueeze(1) * (torch.conj(shearlets).unsqueeze(0) * shearlets.unsqueeze(0))
 
-    X = suppress_square(X, (X.shape[-1] - patch_size) // 2, True)
+    X = suppress_square(X, (X.shape[-1] - patch_size) // 2, crop=True)
 
     return X
 
