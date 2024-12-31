@@ -1,0 +1,12 @@
+LICENSE
+README.md
+pyproject.toml
+src/shearletNN/__init__.py
+src/shearletNN/complex_resnet.py
+src/shearletNN/layers.py
+src/shearletNN/shearlet_utils.py
+src/shearletNN/shearlets.py
+src/shearletNN.egg-info/PKG-INFO
+src/shearletNN.egg-info/SOURCES.txt
+src/shearletNN.egg-info/dependency_links.txt
+src/shearletNN.egg-info/top_level.txt

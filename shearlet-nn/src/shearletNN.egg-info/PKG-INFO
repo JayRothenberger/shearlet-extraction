@@ -1,0 +1,14 @@
+Metadata-Version: 2.1
+Name: shearletNN
+Version: 0.0.1
+Summary: A neural network that processes shearlet coefficients
+Author-email: Jay Rothenberger <jay.c.rothenberger@gmail.com>
+Project-URL: Homepage, https://github.com/JayRothenberger/shearlet-extraction
+Project-URL: Issues, https://github.com/JayRothenberger/shearlet-extraction/issues
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: Unix
+Classifier: Topic :: Scientific/Engineering :: Machine Learning
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE

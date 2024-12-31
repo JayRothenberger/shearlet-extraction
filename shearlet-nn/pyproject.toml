@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "shearletNN"
+version = "0.0.1"
+authors = [
+  { name="Jay Rothenberger", email="jay.c.rothenberger@gmail.com" },
+]
+description = "A neural network that processes shearlet coefficients"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Unix",
+    "Topic :: Scientific/Engineering :: Machine Learning",
+]
+
+[project.urls]
+Homepage = "https://github.com/JayRothenberger/shearlet-extraction"
+Issues = "https://github.com/JayRothenberger/shearlet-extraction/issues"
