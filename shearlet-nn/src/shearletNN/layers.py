@@ -1,23 +1,20 @@
 import torch
 from torch import nn
 from typing import Any, Callable, List, Optional, Type, Union, Tuple
+from torch.autograd import Function
+import numpy as np
+
+
+"""
+TODO: support any number of dimensions for batch and layer norm, fix the dimension dependence in batch covariance
+"""
 
 
 class ComplexMaxPool2d(torch.nn.Module):
     """
-    currently computes the max pool of both the real and imaginary, this is wrong.
-
-    need to use this if you want to pool one and take the pooled from the other:
-        - torch.nn.functional.max_pool2d(input, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False)
-
-    there are two options for how to compute the maximum this way:
-        - compute the absolute value and take the maximum of that
-        - compute the complex conjugate and take the maximum of that
-        - take the maximum of the real part and use the corresponding imaginary part
-        - multiply the real part by the value of the function at the corresponding part of the phase (too hard)
-
+    default behaviour interprets input as wavelet coefficients and pools by the aplitude
     """
-    def __init__(self, kernel_size = 2, stride = 2, padding = 0, mode="magnitude"):
+    def __init__(self, kernel_size = 2, stride = 2, padding = 0, mode="absolute"):
         super(ComplexMaxPool2d, self).__init__()
         self.modes = ["magnitude", "conjugate", "absolute"]
         assert mode in self.modes
@@ -48,8 +45,10 @@ class ComplexMaxPool2d(torch.nn.Module):
 class ComplexAdaptiveMaxPool2d(torch.nn.Module):
     """
     computes the adaptive max pool in the complex plane
+
+    default behaviour interprets input as wavelet coefficients and pools by the aplitude
     """
-    def __init__(self, output_size, mode="magnitude"):
+    def __init__(self, output_size, mode="absolute"):
         super(ComplexAdaptiveMaxPool2d, self).__init__()
         self.modes = ["magnitude", "conjugate", "absolute"]
         assert mode in self.modes
@@ -95,11 +94,28 @@ def batch_cov(points):
     return bcov  # (C, D, D)
 
 
+def batch_cov_3d(points):
+    """
+    for our purposes we want to batch the covariance along the channel dimension (originally 1) and compute it over the batch dimension (originally 0)
+
+    we need a covariance matrix for each channel along the batch dimension, so of shape (C, 2, 2)
+
+    Input: points \in (B, C, H, W, D)
+
+    """
+    points = points.permute(2, 0, 1, 3) # Channels first for the reshape
+    C, B, T, D = points.size()
+    N = B * T
+    mean = points.mean(dim=1).unsqueeze(1) # C, 1, H, W, D
+    diffs = (points - mean).reshape(C * N, D)
+    prods = torch.bmm(diffs.unsqueeze(2), diffs.unsqueeze(1)).reshape(C, N, D, D)
+    bcov = prods.sum(dim=1) / (N - 1)  # Unbiased estimate
+    return bcov  # (C, D, D)
+
+
 class ComplexBatchNormalization(torch.nn.Module):
     """
     Complex Batch-Normalization as defined in section 3.5 of https://arxiv.org/abs/1705.09792
-    in tensorflow
-    TODO: port this to pytorch
     """
 
     def __init__(self,      
@@ -220,19 +236,19 @@ class ComplexBatchNormalization(torch.nn.Module):
         :param var: Tensor of shape [..., 2, 2], if inputs dtype is real, var[slice] = [[var_slice, 0], [0, 0]]
         :param mean: Tensor with the mean in the corresponding dtype (same shape as inputs)
         """
-        complex_zero_mean = inputs - mean.detach()
+        complex_zero_mean = inputs - mean
         # Inv and sqrtm is done over 2 inner most dimension [..., M, M] so it should be [..., 2, 2] for us.
         # torch has no matrix square root, so we have:
 
         L, Q = torch.linalg.eigh(torch.linalg.inv((var + self.epsilon_matrix.unsqueeze(0)).to(torch.float64))) # low precision dtypes not supported
         # eigenvalues of positive semi-definite matrices are always real (and non-negative)
         diag = torch.diag_embed(L ** (0.5))
-
         inv_sqrt_var = Q @ diag @ Q.mH # var^(-1/2), (C, 2, 2)
+
         # Separate real and imag so I go from shape [...] to [..., 2]
         zero_mean = torch.stack((complex_zero_mean.real, complex_zero_mean.imag), axis=-1).permute(0, 2, 3, 1, 4)
         # (C, 2, 2) @ (1, H, W, C, 2, 1) -> (1, H, W, C, 2, 1)
-        inputs_hat = torch.matmul(inv_sqrt_var.to(self.my_realtype).detach(), zero_mean.unsqueeze(-1))
+        inputs_hat = torch.matmul(inv_sqrt_var.to(self.my_realtype), zero_mean.unsqueeze(-1))
         # Then I squeeze to remove the last shape so I go from [..., 2, 1] to [..., 2].
         # Use reshape and not squeeze in case I have 1 channel for example.
         squeeze_inputs_hat = torch.reshape(inputs_hat, shape=inputs_hat.shape[:-1]).permute(0, 3, 1, 2, 4)
@@ -242,8 +258,144 @@ class ComplexBatchNormalization(torch.nn.Module):
         return complex_inputs_hat
 
 
+class ComplexLayerNorm(torch.nn.Module):
+    """
+    x = torch.randn((50,20,100))
+
+    layerNorm = torch.nn.LayerNorm(x.shape[-1], elementwise_affine = True)
+    y1 = layerNorm(x)
+
+    mean = torch.mean(x, dim=-1, keepdim=True)
+    var = torch.square(x - mean).mean(dim=-1, keepdim=True)
+    y2 = ((x - mean) / torch.sqrt(var + layerNorm.eps)) * layerNorm.weight + layerNorm.bias
+
+    torch.allclose(y1, y2, atol=1e-5, rtol=1e-5)
+    """
+    def __init__(self,      
+                 num_features: int,            
+                 eps: float = 0.01,
+                 elementwise_affine=True,
+                 device: str = None,
+                 dtype=torch.complex64,
+                 dim: Union[List[int], Tuple[int], int] = 1, 
+                 beta_initializer=torch.zeros, 
+                 gamma_initializer=torch.ones, 
+                 **kwargs):
+        
+        self.num_features = num_features
+        self.my_dtype = dtype
+        self.my_realtype = torch.zeros((1,), dtype=self.my_dtype).real.dtype
+        self.eps = eps
+        self.device = device
+
+        if isinstance(dim, int):
+            dim = [dim]
+        self.dim = list(dim)
+
+        for d in dim:
+            assert d > -1 and isinstance(d, int), 'dim must be nonnegative integer'
+
+        super(ComplexLayerNorm, self).__init__(**kwargs)
+        self.elementwise_affine = elementwise_affine
+        self.beta_initializer = beta_initializer
+        self.gamma_initializer = gamma_initializer
+
+        factory_kwargs = {"device": device, "dtype": dtype}
+        self.gamma_r = torch.nn.parameter.UninitializedParameter(**factory_kwargs)
+        self.gamma_i = torch.nn.parameter.UninitializedParameter(**factory_kwargs)
+        self.beta_r = torch.nn.parameter.UninitializedParameter(**factory_kwargs)
+        self.beta_i = torch.nn.parameter.UninitializedParameter(**factory_kwargs)
+
+        self.epsilon_matrix = torch.nn.parameter.Buffer(data=torch.eye(2, dtype=self.my_realtype) * self.eps)
+
+        desired_shape = [self.num_features]
+
+        self.gamma_r = torch.nn.Parameter(
+            data=self.gamma_initializer(size=tuple(desired_shape)),
+            requires_grad=True
+        )
+        self.gamma_i = torch.nn.Parameter(
+            data=torch.zeros(size=tuple(desired_shape)),
+            requires_grad=True
+        )  # I think I just need to scale with gamma, so by default I leave the imag part to zero
+        self.beta_r = torch.nn.Parameter(
+            data=self.beta_initializer(size=desired_shape),
+            requires_grad=True
+        )
+        self.beta_i = torch.nn.Parameter(
+            data=self.beta_initializer(size=desired_shape),
+            requires_grad=True
+        )
+
+
+    def forward(self, inputs):
+        # First get the mean and var
+        mean = torch.complex(torch.mean(inputs.real, dim=-1, keepdim=True), 
+                                torch.mean(inputs.imag, dim=-1, keepdim=True)
+                                ).to(self.my_dtype) # 1, C, 1, 1
+        var = batch_cov_3d(torch.stack((inputs.real, inputs.imag), dim=-1)) # C, 2, 2
+
+        out = self._normalize(inputs, var, mean) # B, C, H, W
+        out = inputs
+
+        if self.elementwise_affine:
+            gamma = torch.complex(self.gamma_r, self.gamma_i).type(self.my_dtype)
+            out = gamma.unsqueeze(0).unsqueeze(0) * out
+
+            beta = torch.complex(self.beta_r, self.beta_i).type(self.my_dtype)
+            out = out + beta.unsqueeze(0).unsqueeze(0)
+
+        assert not out.isnan().any(), 'nan in layer norm'
+
+        return out
+
+    def _normalize(self, inputs, var, mean):
+        """
+        :inputs: Tensor
+        :param var: Tensor of shape [..., 2, 2], if inputs dtype is real, var[slice] = [[var_slice, 0], [0, 0]]
+        :param mean: Tensor with the mean in the corresponding dtype (same shape as inputs)
+        """
+        complex_zero_mean = inputs - mean
+        # Inv and sqrtm is done over 2 inner most dimension [..., M, M] so it should be [..., 2, 2] for us.
+        # torch has no matrix square root, so we have:
+
+        L, Q = torch.linalg.eigh(torch.linalg.inv((var + self.epsilon_matrix.unsqueeze(0)).to(torch.float64))) # low precision dtypes not supported
+        # eigenvalues of positive semi-definite matrices are always real (and non-negative)
+        diag = torch.diag_embed(L ** (0.5))
+        inv_sqrt_var = Q @ diag @ Q.mH # var^(-1/2), (C, 2, 2)
+
+        # Separate real and imag so I go from shape [...] to [..., 2]
+        zero_mean = torch.stack((complex_zero_mean.real, complex_zero_mean.imag), axis=-1)
+        # (C, 2, 2) @ (N, T, C, 2, 1) -> (N, T, C, 2, 1)
+        inputs_hat = torch.matmul(inv_sqrt_var.to(self.my_realtype), zero_mean.unsqueeze(-1))
+        # Then I squeeze to remove the last shape so I go from [..., 2, 1] to [..., 2].
+        # Use reshape and not squeeze in case I have 1 channel for example.
+        squeeze_inputs_hat = torch.reshape(inputs_hat, shape=inputs_hat.shape[:-1])
+        # Get complex data
+        complex_inputs_hat = torch.complex(squeeze_inputs_hat[..., 0], squeeze_inputs_hat[..., 1]).type(self.my_dtype)
+
+        return complex_inputs_hat
+
+
+class ComplexDropout(torch.nn.Module):
+    def __init__(self, p):
+        super(ComplexDropout, self).__init__()
+        self.p = p
+
+    def forward(self, x):
+        # work around unimplemented dropout for complex
+        if self.training:
+            if x.is_complex():
+                mask = torch.nn.functional.dropout(torch.ones_like(x.real), self.p)
+                return x * mask
+            else:
+                return torch.nn.functional.dropout(x, self.p)
+        else:
+            return x
+
+
 def complex_conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1) -> nn.Conv2d:
-    """3x3 convolution with padding"""
+    """complex 3x3 convolution with padding"""
     return nn.Conv2d(
         in_planes,
         out_planes,
@@ -258,8 +410,29 @@ def complex_conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: in
 
 
 def complex_conv1x1(in_planes: int, out_planes: int, stride: int = 1) -> nn.Conv2d:
-    """1x1 convolution"""
+    """complex 1x1 convolution"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False, dtype=torch.complex64)
+
+
+def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1) -> nn.Conv2d:
+    """3x3 convolution with padding"""
+    return nn.Conv2d(
+        in_planes,
+        out_planes,
+        kernel_size=3,
+        stride=stride,
+        padding=dilation,
+        groups=groups,
+        bias=False,
+        dilation=dilation,
+        dtype=torch.float32
+    )
+
+
+def conv1x1(in_planes: int, out_planes: int, stride: int = 1) -> nn.Conv2d:
+    """1x1 convolution"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False, dtype=torch.float32)
+
 
 
 class ComplexFlatten(torch.nn.Module):
@@ -305,3 +478,17 @@ class SinReLU(torch.nn.Module):
 
     def forward(self, x):
         return torch.complex(self.rReLU(x.real), torch.sin(x.imag))
+    
+
+class CGELU(torch.nn.Module):
+
+    def __init__(self, **kwargs):
+        super(CGELU, self).__init__()
+        self.rGELU = torch.nn.GELU(**kwargs)
+        self.iGELU = torch.nn.GELU(**kwargs)
+
+    def forward(self, x):
+        assert not x.isnan().any(), 'nan in gelu input'
+        out = torch.complex(self.rGELU(x.real), self.iGELU(x.imag))
+        assert not out.isnan().any(), 'nan in gelu'
+        return out
