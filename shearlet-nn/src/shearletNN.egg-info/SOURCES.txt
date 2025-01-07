@@ -2,6 +2,7 @@ LICENSE
 README.md
 pyproject.toml
 src/shearletNN/__init__.py
+src/shearletNN/complex_deit.py
 src/shearletNN/complex_resnet.py
 src/shearletNN/layers.py
 src/shearletNN/shearlet_utils.py

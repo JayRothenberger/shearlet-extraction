@@ -113,9 +113,9 @@ def spatial_shearlet_transform(img, shearlets, patch_size=32):
 
 def frequency_shearlet_transform(img, shearlets, patch_size=32):
     img = torch.cat([
-                     batched_frequency_coefficients(img[:, 0], shearlets, patch_size),
-                     batched_frequency_coefficients(img[:, 1], shearlets, patch_size),
-                     batched_frequency_coefficients(img[:, 2], shearlets, patch_size),
+                     batched_frequency_coefficients(img[:, 0], shearlets, patch_size)[:, :2],
+                     batched_frequency_coefficients(img[:, 1], shearlets, patch_size)[:, :2],
+                     batched_frequency_coefficients(img[:, 2], shearlets, patch_size)[:, :2],
                      ], 1).type(torch.complex64)
     return img
 
@@ -157,20 +157,29 @@ def _complex_trunc_normal_(tensor, mean, std, a, b):
 
     # Uniformly fill tensor with values from [l, u], then translate to
     # [2l-1, 2u-1].
-    tensor.uniform_(2 * l - 1, 2 * u - 1)
+    tensor.real.uniform_(2 * l - 1, 2 * u - 1)
+    tensor.imag.uniform_(2 * l - 1, 2 * u - 1)
+    assert not tensor.isnan().any()
 
     # Use inverse cdf transform for normal distribution to get truncated
     # standard normal
     tensor.real.erfinv_()
     tensor.imag.erfinv_()
+    assert not tensor.isnan().any()
 
     # Transform to proper mean, std
-    tensor.mul_(std * math.sqrt(2.))
-    tensor.add_(torch.complex(torch.tensor(mean), torch.tensor(mean)))
+    # tensor.mul_(std * math.sqrt(2.))
+    tensor.real *= std * math.sqrt(2.)
+    tensor.imag *= std * math.sqrt(2.)
+    assert not tensor.isnan().any()
+    tensor.real += mean
+    tensor.imag += mean
+    assert not tensor.isnan().any()
 
     # Clamp to ensure it's in the proper range
     tensor.real.clamp_(min=a, max=b)
     tensor.imag.clamp_(min=a, max=b)
+    assert not tensor.isnan().any()
 
     return tensor
 

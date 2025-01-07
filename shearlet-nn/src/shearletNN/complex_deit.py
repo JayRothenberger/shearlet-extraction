@@ -266,17 +266,17 @@ class Mlp(nn.Module):
 
     def forward(self, x):
         x = self.fc1(x)
-        assert not x.isnan().any(), 'nan in fc1 output'
+
         x = self.act(x)
-        assert not x.isnan().any(), 'nan in act output'
+
         x = self.drop1(x)
-        assert not x.isnan().any(), 'nan in drop1 output'
+
         x = self.norm(x)
-        assert not x.isnan().any(), 'nan in norm output'
+
         x = self.fc2(x)
-        assert not x.isnan().any(), 'nan in fc2 output'
+
         x = self.drop2(x)
-        assert not x.isnan().any(), 'nan in drop2 output'
+
         return x
 
 
@@ -315,9 +315,8 @@ class Attention(nn.Module):
         attn = q @ k.transpose(-2, -1)
 
         # phase preserving softmax operation
-        mag = attn.abs().type(torch.float64)
+        mag = attn.abs()
         attn = mag.softmax(-1).type(x.dtype) # * (attn / mag)
-        assert not attn.isnan().any(), 'nan in softmax'
         
         attn = self.attn_drop(attn)
 
@@ -813,11 +812,11 @@ class RoPEAttention(Attention):
         attn = (q * self.scale) @ k.transpose(-2, -1)
 
         # phase preserving softmax operation
-        assert not attn.isnan().any(), 'nan in attn'
-        mag = attn.abs().type(torch.float64)
-        assert not attn.isnan().any(), 'nan in mag'
+
+        mag = attn.abs()
+
         attn = mag.softmax(-1).type(x.dtype) # * (attn / mag)
-        assert not attn.isnan().any(), 'nan in softmax'
+
     
         attn = self.attn_drop(attn)
 
@@ -938,9 +937,8 @@ class rope_vit_models(vit_models):
             freqs_cis = self.compute_cis(self.freqs, t_x, t_y)
 
             for i, blk in enumerate(self.blocks):
-                print(i)
                 x = blk(x, freqs_cis=freqs_cis[i])
-                assert not x.isnan().any(), i
+
         else:
             if self.freqs_cis.shape[0] != x.shape[1] - 1:
                 freqs_cis = self.compute_cis(
@@ -951,9 +949,7 @@ class rope_vit_models(vit_models):
             freqs_cis = freqs_cis.to(x.device)
 
             for i, blk in enumerate(self.blocks):
-                print(i)
                 x = blk(x, freqs_cis=freqs_cis)
-                assert not x.isnan().any(), i
 
 
         x = self.norm(x)
@@ -1243,13 +1239,13 @@ def rope_mixed_ape_deit_large_patch16_LS(
 
 
 @register_model
-def rope_mixed_ape_deit_small_patch8_LS(
+def rope_mixed_ape_deit_small_patch4_LS(
     pretrained=False, img_size=224, pretrained_21k=False, **kwargs
 ):
     model = rope_vit_models(
         img_size=img_size,
-        patch_size=8,
-        embed_dim=384,
+        patch_size=4,
+        embed_dim=192,
         depth=12,
         num_heads=6,
         mlp_ratio=4,
@@ -1260,6 +1256,51 @@ def rope_mixed_ape_deit_small_patch8_LS(
         rope_theta=10.0,
         rope_mixed=True,
         use_ape=True,
+        **kwargs,
+    )
+    model.default_cfg = _cfg()
+    return model
+
+
+@register_model
+def rope_mixed_ape_deit_base_patch8_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = rope_vit_models(
+        img_size=img_size,
+        patch_size=8,
+        embed_dim=768,
+        depth=12,
+        num_heads=12,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=RoPE_Layer_scale_init_Block,
+        Attention_block=RoPEAttention,
+        rope_theta=10.0,
+        rope_mixed=True,
+        use_ape=True,
+        **kwargs,
+    )
+    return model
+
+@register_model
+def rope_mixed_deit_small_patch4_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = rope_vit_models(
+        img_size=img_size,
+        patch_size=4,
+        embed_dim=96,
+        depth=12,
+        num_heads=6,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=RoPE_Layer_scale_init_Block,
+        Attention_block=RoPEAttention,
+        rope_theta=10.0,
+        rope_mixed=True,
         **kwargs,
     )
     model.default_cfg = _cfg()
