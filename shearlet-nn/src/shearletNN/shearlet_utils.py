@@ -113,9 +113,9 @@ def spatial_shearlet_transform(img, shearlets, patch_size=32):
 
 def frequency_shearlet_transform(img, shearlets, patch_size=32):
     img = torch.cat([
-                     batched_frequency_coefficients(img[:, 0], shearlets, patch_size)[:, :2],
-                     batched_frequency_coefficients(img[:, 1], shearlets, patch_size)[:, :2],
-                     batched_frequency_coefficients(img[:, 2], shearlets, patch_size)[:, :2],
+                     batched_frequency_coefficients(img[:, 0], shearlets, patch_size),
+                     batched_frequency_coefficients(img[:, 1], shearlets, patch_size),
+                     batched_frequency_coefficients(img[:, 2], shearlets, patch_size),
                      ], 1).type(torch.complex64)
     return img
 
