@@ -160,10 +160,8 @@ class ComplexBatchNormalization(torch.nn.Module):
         self.gamma_i = torch.nn.parameter.UninitializedParameter(**factory_kwargs)
         self.beta_r = torch.nn.parameter.UninitializedParameter(**factory_kwargs)
         self.beta_i = torch.nn.parameter.UninitializedParameter(**factory_kwargs)
-        self.moving_mean = torch.nn.parameter.UninitializedBuffer(**factory_kwargs)
-        self.moving_var = torch.nn.parameter.UninitializedBuffer(**factory_kwargs)
 
-        self.epsilon_matrix = torch.nn.parameter.Buffer(data=torch.eye(2, dtype=self.my_realtype) * self.eps)
+        self.register_buffer("epsilon_matrix", torch.eye(2, dtype=self.my_realtype) * self.eps)
 
         desired_shape = [self.num_features]
 
@@ -184,8 +182,7 @@ class ComplexBatchNormalization(torch.nn.Module):
             requires_grad=True
         )
         # this is complex
-        self.moving_mean = torch.nn.parameter.Buffer(
-            data=torch.complex(real=self.moving_mean_initializer(
+        self.register_buffer("moving_mean", torch.complex(real=self.moving_mean_initializer(
                                                                           size=desired_shape,
                                                                           dtype=self.my_realtype
                                                                           ),
@@ -193,13 +190,12 @@ class ComplexBatchNormalization(torch.nn.Module):
                                                                           size=desired_shape,
                                                                           dtype=self.my_realtype
                                                                           )
-                                                                          ), 
-        )
+                                                                          ))
+
         # this is always real because of how we computed it
-        self.moving_var = torch.nn.parameter.Buffer(
-            data=torch.eye(2) * self.moving_variance_initializer(size=tuple(desired_shape) + (2, 2),
-                                                                          dtype=self.my_realtype) / (2**(0.5)),
-        )
+        self.register_buffer("moving_var", torch.eye(2) * self.moving_variance_initializer(size=tuple(desired_shape) + (2, 2),
+                                                                          dtype=self.my_realtype) / (2**(0.5)),)
+
 
 
     def forward(self, inputs):
@@ -273,7 +269,7 @@ class ComplexLayerNorm(torch.nn.Module):
     """
     def __init__(self,      
                  num_features: int,            
-                 eps: float = 0.01,
+                 eps: float = 0.0001,
                  elementwise_affine=True,
                  device: str = None,
                  dtype=torch.complex64,
@@ -306,7 +302,9 @@ class ComplexLayerNorm(torch.nn.Module):
         self.beta_r = torch.nn.parameter.UninitializedParameter(**factory_kwargs)
         self.beta_i = torch.nn.parameter.UninitializedParameter(**factory_kwargs)
 
-        self.epsilon_matrix = torch.nn.parameter.Buffer(data=torch.eye(2, dtype=self.my_realtype) * self.eps)
+        # self.epsilon_matrix = torch.nn.parameter.Buffer(data=torch.eye(2, dtype=self.my_realtype) * self.eps)
+
+        self.register_buffer("epsilon_matrix", torch.eye(2, dtype=self.my_realtype) * self.eps)
 
         desired_shape = [self.num_features]
 
@@ -344,8 +342,6 @@ class ComplexLayerNorm(torch.nn.Module):
 
             beta = torch.complex(self.beta_r, self.beta_i).type(self.my_dtype)
             out = out + beta.unsqueeze(0).unsqueeze(0)
-
-        assert not out.isnan().any(), 'nan in layer norm'
 
         return out
 
