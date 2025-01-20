@@ -36,7 +36,7 @@ from timm.layers import Format, nchw_to
 import math
 import logging
 
-from .layers import ComplexLayerNorm, ComplexDropout, ComplexConcat
+from .layers import ComplexLayerNorm, ComplexDropout, ComplexConcat, CGELU
 from .shearlet_utils import trunc_normal_
 
 _logger = logging.getLogger(__name__)
@@ -231,6 +231,144 @@ class PatchEmbed(nn.Module):
         elif self.output_fmt != Format.NCHW:
             x = nchw_to(x, self.output_fmt)
         x = self.norm(x)
+        return x
+
+
+class Unraveling:
+    def __init__(self, n, patch_size=1):
+        self.levels = []
+        self.patch_size = patch_size
+
+        for i in range(0, n // 2):
+            level = []
+            for j in range(i, n - i):
+                level.append((j, i))
+                level.append((i, j))
+
+                level.append((j, n - (i + 1)))
+                level.append((n - (i + 1), j))
+
+            level = list(set(level))
+            self.levels.append((torch.tensor([x for x, _ in level]), torch.tensor([y for _, y in level])))
+
+        levels = []
+
+        for i in range(len(self.levels) // self.patch_size):
+            # the elements here are tuples of tensors
+            levels.append((torch.cat([self.levels[j][0] for j in range(i*4, (i+1)*4)], 0), torch.cat([self.levels[j][1] for j in range(i*4, (i+1)*4)], 0)))
+
+        self.levels = levels
+    
+    def __call__(self, x):
+        return [x[..., a, b] for a, b in self.levels]
+    
+
+class FreqEmbed(nn.Module):
+    """2D Shearlet Coefficients Image to Patch Embedding"""
+    # TODO: support patch size here where we concat each pair of 
+
+    output_fmt: Format
+    dynamic_img_pad: torch.jit.Final[bool]
+
+    def __init__(
+        self,
+        img_size: Optional[int] = 224,
+        patch_size: int = 16,
+        in_chans: int = 3,
+        embed_dim: int = 768,
+        norm_layer: Optional[Callable] = None,
+        flatten: bool = True,
+        output_fmt: Optional[str] = None,
+        bias: bool = True,
+        strict_img_size: bool = True,
+        dynamic_img_pad: bool = False,
+    ):
+        super().__init__()
+        self.patch_size = to_2tuple(patch_size)
+        self.img_size, self.grid_size, self.num_patches = self._init_img_size(img_size)
+        self.img_size = (img_size, img_size)
+        self.grid_size = (img_size // 2, 1)
+        self.num_patches = img_size // 2
+
+        if output_fmt is not None:
+            self.flatten = False
+            self.output_fmt = Format(output_fmt)
+        else:
+            # flatten spatial dim and transpose to channels last, kept for bwd compat
+            self.flatten = flatten
+            self.output_fmt = Format.NCHW
+        self.strict_img_size = strict_img_size
+        self.dynamic_img_pad = dynamic_img_pad
+
+        self.unravel = Unraveling(img_size)
+        self.layers = torch.nn.ModuleList([torch.nn.Linear(len(level[0]) * in_chans, embed_dim, bias=bias, dtype=torch.complex64) for level in self.unravel.levels])
+
+        self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
+
+    def _init_img_size(self, img_size: Union[int, Tuple[int, int]]):
+        assert self.patch_size
+        if img_size is None:
+            return None, None, None
+        img_size = to_2tuple(img_size)
+        grid_size = tuple([s // p for s, p in zip(img_size, self.patch_size)])
+        num_patches = grid_size[0] * grid_size[1]
+        return img_size, grid_size, num_patches
+
+    def set_input_size(
+        self,
+        img_size: Optional[Union[int, Tuple[int, int]]] = None,
+        patch_size: Optional[Union[int, Tuple[int, int]]] = None,
+    ):
+        new_patch_size = None
+        if patch_size is not None:
+            new_patch_size = to_2tuple(patch_size)
+        if new_patch_size is not None and new_patch_size != self.patch_size:
+            with torch.no_grad():
+                new_proj = nn.Conv2d(
+                    self.proj.in_channels,
+                    self.proj.out_channels,
+                    kernel_size=new_patch_size,
+                    stride=new_patch_size,
+                    bias=self.proj.bias is not None,
+                    dtype=torch.complex64
+                )
+                new_proj.weight.copy_(
+                    resample_patch_embed(self.proj.weight, new_patch_size, verbose=True)
+                )
+                if self.proj.bias is not None:
+                    new_proj.bias.copy_(self.proj.bias)
+                self.proj = new_proj
+            self.patch_size = new_patch_size
+        img_size = img_size or self.img_size
+        if img_size != self.img_size or new_patch_size is not None:
+            self.img_size, self.grid_size, self.num_patches = self._init_img_size(
+                img_size
+            )
+
+    def feat_ratio(self, as_scalar=True) -> Union[Tuple[int, int], int]:
+        if as_scalar:
+            return max(self.patch_size)
+        else:
+            return self.patch_size
+
+    def dynamic_feat_size(self, img_size: Tuple[int, int]) -> Tuple[int, int]:
+        """Get grid (feature) size for given image size taking account of dynamic padding.
+        NOTE: must be torchscript compatible so using fixed tuple indexing
+        """
+        if self.dynamic_img_pad:
+            return math.ceil(img_size[0] / self.patch_size[0]), math.ceil(
+                img_size[1] / self.patch_size[1]
+            )
+        else:
+            return img_size[0] // self.patch_size[0], img_size[1] // self.patch_size[1]
+        
+    def forward(self, x):
+        B, C, H, W = x.shape
+
+        unraveled = self.unravel(x)
+        tokens = torch.stack([layer(level.flatten(1)) for layer, level in zip(self.layers, unraveled)], -2)
+        
+
         return x
 
 
@@ -614,11 +752,12 @@ class vit_models(nn.Module):
             in_chans=in_chans,
             embed_dim=embed_dim,
         )
+
         num_patches = self.patch_embed.num_patches
 
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim, dtype=torch.complex64))
 
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim, dtype=torch.complex64))
 
         dpr = [drop_path_rate for i in range(depth)]
         self.blocks = nn.ModuleList(
@@ -1291,7 +1430,7 @@ def complex_rope_mixed_deit_small_patch4_LS(
     model = complex_rope_vit_models(
         img_size=img_size,
         patch_size=4,
-        embed_dim=96,
+        embed_dim=384,
         depth=12,
         num_heads=6,
         mlp_ratio=4,
@@ -1304,4 +1443,95 @@ def complex_rope_mixed_deit_small_patch4_LS(
         **kwargs,
     )
     model.default_cfg = _cfg()
+    return model
+
+@register_model
+def complex_freakformer_small_patch2_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = vit_models(
+        img_size=img_size,
+        in_chans=3,
+        patch_size=2,
+        embed_dim=384,
+        depth=12,
+        num_heads=6,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=Attention,
+        act_layer=CGELU,
+        Patch_layer=FreqEmbed,
+        **kwargs,
+    )
+
+    return model@register_model
+
+def complex_freakformer_small_patch4_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = vit_models(
+        img_size=img_size,
+        in_chans=3,
+        patch_size=4,
+        embed_dim=384,
+        depth=12,
+        num_heads=6,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=Attention,
+        act_layer=CGELU,
+        Patch_layer=FreqEmbed,
+        **kwargs,
+    )
+
+    return model
+
+@register_model
+def complex_freakformer_base_patch2_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = vit_models(
+        img_size=img_size,
+        in_chans=3,
+        patch_size=2,
+        embed_dim=768,
+        depth=12,
+        num_heads=12,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=Attention,
+        act_layer=CGELU,
+        Patch_layer=FreqEmbed,
+        **kwargs,
+    )
+
+    return model
+
+@register_model
+def complex_freakformer_base_patch4_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = vit_models(
+        img_size=img_size,
+        in_chans=3,
+        patch_size=4,
+        embed_dim=768,
+        depth=12,
+        num_heads=12,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=Attention,
+        act_layer=CGELU,
+        Patch_layer=FreqEmbed,
+        **kwargs,
+    )
+
     return model
