@@ -16,7 +16,7 @@ import random
 import gc
 import wandb
 
-from shearletNN.complex_deit import *
+from shearletNN.deit import *
 from shearletNN.complex_resnet import *
 
 from dahps import DistributedAsynchronousRandomSearch, sync_parameters
@@ -24,18 +24,14 @@ from dahps import DistributedAsynchronousRandomSearch, sync_parameters
 ### model registry utilities a map from string names to model classes
 
 model_dir = {
-    'complex_freakformer_small_patch2_LS': complex_freakformer_small_patch2_LS,
-    'complex_freakformer_small_patch4_LS': complex_freakformer_small_patch4_LS,
-    'complex_freakformer_base_patch2_LS': complex_freakformer_base_patch2_LS,
-    'complex_freakformer_base_patch4_LS': complex_freakformer_base_patch4_LS,
-    'complex_rope_mixed_ape_deit_base_patch16_LS': complex_rope_mixed_ape_deit_base_patch16_LS,
-    'complex_rope_mixed_ape_deit_small_patch16_LS': complex_rope_mixed_ape_deit_small_patch16_LS,
-    'complex_rope_mixed_deit_base_patch16_LS': complex_rope_mixed_deit_base_patch16_LS,
-    'complex_rope_mixed_deit_small_patch16_LS': complex_rope_mixed_deit_small_patch16_LS,
-    'complex_resnet18': complex_resnet18,
-    'complex_resnet34': complex_resnet34,
-    'complex_resnet50': complex_resnet50,
-    'complex_resnet101': complex_resnet101,
+    'rope_mixed_ape_deit_base_patch16_LS': rope_mixed_ape_deit_base_patch16_LS,
+    'rope_mixed_ape_deit_small_patch16_LS': rope_mixed_ape_deit_small_patch16_LS,
+    'rope_mixed_deit_base_patch16_LS': rope_mixed_deit_base_patch16_LS,
+    'rope_mixed_deit_small_patch16_LS': rope_mixed_deit_small_patch16_LS,
+    'resnet18': torchvision.models.resnet18,
+    'resnet34': torchvision.models.resnet34,
+    'resnet50': torchvision.models.resnet50,
+    'resnet101': torchvision.models.resnet101,
 }
 
 ### model dataset utilities: 
@@ -200,27 +196,8 @@ def training_process(args):
             name=f"{rank} {device} {torch.cuda.current_device()} : {args.model}",
             config={'args': vars(args)})
 
-    patch_size = args.patch_size
     image_size = args.image_size
     batch_size_train = args.batch_size
-
-    rows, cols = image_size, image_size
-
-
-    shearlets, shearletIdxs, RMS, dualFrameWeights = getcomplexshearlets2D(	rows, 
-                                                                            cols, 
-                                                                            1, 
-                                                                            3, 
-                                                                            1, 
-                                                                            0.5,
-                                                                            wavelet_eff_support = image_size,
-                                                                            gaussian_eff_support = image_size
-                                                                            )
-
-    # manage how much of the shearlet coeffs we use (there are 20 max in our current configuration)
-
-    shearlets = torch.tensor(shearlets).permute(2, 0, 1).type(torch.complex64).to(torch.cuda.current_device())
-    shearlets = shearlets[:args.num_shearlet_channels]
 
 
     def repeat3(x):
@@ -258,22 +235,15 @@ def training_process(args):
         ds_val,
         batch_size=batch_size_train, shuffle=False)
 
-    # a selector for the type of model which will add a shearlet loader if needed and select the correct model
-
-    # shearlet input experiments
-    def shearlet_transform(img):
-        return frequency_shearlet_transform(img, shearlets, patch_size)
-
-    train_loader = ShearletTransformLoader(train_loader, shearlet_transform)
-
-    val_loader = ShearletTransformLoader(val_loader, shearlet_transform)
-
     for x, y in tqdm(train_loader):
-        # TODO: need to determine the size of the input based on the type of model and loader
-        assert list(x.shape) == [batch_size_train, 3, patch_size, patch_size], x.shape
+        assert list(x.shape) == [batch_size_train, 3, image_size, image_size], x.shape
         break
-    
-    model = model_dir[args.model_type](img_size=patch_size, in_chans=3, num_classes=101)
+
+    # a selector for the type of model
+    if args.model_type.startswith('resnet'):
+        model = torch.nn.Sequential(model_dir[args.model_type](), torch.nn.Linear(1000, num_classes=spec_dir[args.model_type]))
+    else:
+        model = model_dir[args.model_type](image_size=image_size, num_classes=spec_dir[args.model_type])
 
     for p in model.parameters():
         assert not p.isnan().any()
@@ -289,17 +259,14 @@ def create_parser():
     
     parser.add_argument('--epochs', type=int, default=1024, 
                         help='training epochs (default: 10)')
-    parser.add_argument('-b', '--batch_size', type=int, default=[64, 128, 256, 512], help='batch size for training (default: 64)')    
-    parser.add_argument('-nsh', '--num_shearlet_channels', type=int, default=[1, 3, 10, 20], help='number of shearlet channels to use')    
-    parser.add_argument('-ps', '--patch_size', type=int, default=[32, 64, 96], 
-                        help='batch size for training (default: 64)')
-    parser.add_argument('-i', '--image_size', type=int, default=[128, 256, 512], 
+    parser.add_argument('-b', '--batch_size', type=int, default=[64, 128, 256, 512], help='batch size for training (default: 64)')     
+    parser.add_argument('-i', '--image_size', type=int, default=[32, 64, 96], 
                         help='batch size for training (default: 64)')
     parser.add_argument('-p', '--patience', type=int, default=32, 
                         help='patience for training')    
     parser.add_argument('-a', '--accumulate', type=int, default=1, 
                         help='patience for training')
-    parser.add_argument('-lr', '--learning_rate', type=float, default=1e-4,
+    parser.add_argument('-lr', '--learning_rate', type=float, default=[1e-3, 1e-4],
                         help='learning rate for SGD (default 1e-3)')
     parser.add_argument('--path', type=str, default='./open_set_hp3', help='path for hparam search directory')
     parser.add_argument('--dataset_path', type=str, default=os.environ['LSCRATCH'], help='path containing training dataset')
@@ -317,7 +284,7 @@ def main(args, rank, world_size):
     # 4 * 4 * 3 * 3 * 4 * 12
     # = 6912
 
-    search_space = ['batch_size', 'patch_size', 'image_size', 'model_type', 'num_shearlet_channels', 'dataset']
+    search_space = ['batch_size', 'image_size', 'model_type', 'dataset', 'learning_rate']
 
     agent = sync_parameters(args, rank, search_space, DistributedAsynchronousRandomSearch)
 
