@@ -437,7 +437,7 @@ class ComplexResNet(nn.Module):
         self.base_width = width_per_group
         self.conv1 = nn.Conv2d(self.in_dim, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False, dtype=torch.complex64)
         self.bn1 = norm_layer(self.inplanes)
-        self.relu = SinReLU(inplace=False)
+        self.relu = CReLU()
         self.maxpool = ComplexMaxPool2d(kernel_size=2, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2, dilate=replace_stride_with_dilation[0])

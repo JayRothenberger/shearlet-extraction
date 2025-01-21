@@ -1,0 +1,48 @@
+Traceback (most recent call last):
+  File "/home/jroth/shearlet-extraction/examples/example.py", line 487, in <module>
+    main(args, rank, world_size)
+  File "/home/jroth/shearlet-extraction/examples/example.py", line 467, in main
+    states, metric = training_process(args)
+  File "/home/jroth/shearlet-extraction/examples/example.py", line 295, in training_process
+    ds_train = data_dir[args.dataset](
+  File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/site-packages/torchvision/datasets/food101.py", line 50, in __init__
+    self._download()
+  File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/site-packages/torchvision/datasets/food101.py", line 93, in _download
+    download_and_extract_archive(self._URL, download_root=self.root, md5=self._MD5)
+  File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/site-packages/torchvision/datasets/utils.py", line 395, in download_and_extract_archive
+    download_url(url, download_root, filename, md5)
+  File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/site-packages/torchvision/datasets/utils.py", line 111, in download_url
+    os.makedirs(root, exist_ok=True)
+  File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/os.py", line 215, in makedirs
+    makedirs(head, exist_ok=exist_ok)
+  File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/os.py", line 215, in makedirs
+    makedirs(head, exist_ok=exist_ok)
+  File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/os.py", line 215, in makedirs
+    makedirs(head, exist_ok=exist_ok)
+  File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/os.py", line 225, in makedirs
+    mkdir(name, mode)
+PermissionError: [Errno 13] Permission denied: '/ourdisk'
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/jroth/shearlet-extraction/examples/example.py", line 487, in <module>
+[rank0]:     main(args, rank, world_size)
+[rank0]:   File "/home/jroth/shearlet-extraction/examples/example.py", line 467, in main
+[rank0]:     states, metric = training_process(args)
+[rank0]:   File "/home/jroth/shearlet-extraction/examples/example.py", line 295, in training_process
+[rank0]:     ds_train = data_dir[args.dataset](
+[rank0]:   File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/site-packages/torchvision/datasets/food101.py", line 50, in __init__
+[rank0]:     self._download()
+[rank0]:   File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/site-packages/torchvision/datasets/food101.py", line 93, in _download
+[rank0]:     download_and_extract_archive(self._URL, download_root=self.root, md5=self._MD5)
+[rank0]:   File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/site-packages/torchvision/datasets/utils.py", line 395, in download_and_extract_archive
+[rank0]:     download_url(url, download_root, filename, md5)
+[rank0]:   File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/site-packages/torchvision/datasets/utils.py", line 111, in download_url
+[rank0]:     os.makedirs(root, exist_ok=True)
+[rank0]:   File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/os.py", line 215, in makedirs
+[rank0]:     makedirs(head, exist_ok=exist_ok)
+[rank0]:   File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/os.py", line 215, in makedirs
+[rank0]:     makedirs(head, exist_ok=exist_ok)
+[rank0]:   File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/os.py", line 215, in makedirs
+[rank0]:     makedirs(head, exist_ok=exist_ok)
+[rank0]:   File "/home/jroth/miniforge3/envs/shearlets/lib/python3.9/os.py", line 225, in makedirs
+[rank0]:     mkdir(name, mode)
+[rank0]: PermissionError: [Errno 13] Permission denied: '/ourdisk'

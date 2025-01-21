@@ -1,0 +1,44 @@
+_wandb:
+    value:
+        cli_version: 0.19.4
+        m: []
+        python_version: 3.9.21
+        t:
+            "1":
+                - 1
+                - 41
+                - 49
+                - 55
+                - 63
+            "2":
+                - 1
+                - 41
+                - 49
+                - 55
+                - 63
+            "3":
+                - 13
+                - 16
+                - 23
+                - 55
+            "4": 3.9.21
+            "5": 0.19.4
+            "8":
+                - 5
+            "12": 0.19.4
+            "13": linux-x86_64
+args:
+    value:
+        accumulate: 1
+        batch_size: 256
+        dataset: food101
+        dataset_path: /ourdisk/hpc/ai2es/datasets/
+        epochs: 1024
+        image_size: 256
+        learning_rate: 0.0001
+        model_type: complex_freakformer_base_patch2_LS
+        num_shearlet_channels: 3
+        patch_size: 96
+        path: ./shearlet_hp
+        patience: 32
+        seed: 13

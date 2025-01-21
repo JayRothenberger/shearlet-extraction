@@ -1176,6 +1176,7 @@ def complex_rope_mixed_deit_small_patch16_LS(
         img_size=img_size,
         patch_size=16,
         embed_dim=384,
+        act_layer=CGELU,
         depth=12,
         num_heads=6,
         mlp_ratio=4,
@@ -1199,6 +1200,7 @@ def complex_rope_mixed_deit_base_patch16_LS(
         img_size=img_size,
         patch_size=16,
         embed_dim=768,
+        act_layer=CGELU,
         depth=12,
         num_heads=12,
         mlp_ratio=4,
@@ -1221,6 +1223,7 @@ def complex_rope_mixed_deit_large_patch16_LS(
         img_size=img_size,
         patch_size=16,
         embed_dim=1024,
+        act_layer=CGELU,
         depth=24,
         num_heads=16,
         mlp_ratio=4,
@@ -1269,6 +1272,7 @@ def complex_rope_axial_ape_deit_base_patch16_LS(
         patch_size=16,
         embed_dim=768,
         depth=12,
+        act_layer=CGELU,
         num_heads=12,
         mlp_ratio=4,
         qkv_bias=True,
@@ -1292,6 +1296,7 @@ def complex_rope_axial_ape_deit_large_patch16_LS(
         patch_size=16,
         embed_dim=1024,
         depth=24,
+        act_layer=CGELU,
         num_heads=16,
         mlp_ratio=4,
         qkv_bias=True,
@@ -1317,6 +1322,7 @@ def complex_rope_mixed_ape_deit_small_patch16_LS(
         embed_dim=384,
         depth=12,
         num_heads=6,
+        act_layer=CGELU,
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(ComplexLayerNorm, eps=1e-6),
@@ -1340,6 +1346,7 @@ def complex_rope_mixed_ape_deit_base_patch16_LS(
         patch_size=16,
         embed_dim=768,
         depth=12,
+        act_layer=CGELU,
         num_heads=12,
         mlp_ratio=4,
         qkv_bias=True,
@@ -1369,6 +1376,7 @@ def complex_rope_mixed_ape_deit_large_patch16_LS(
         norm_layer=partial(ComplexLayerNorm, eps=1e-6),
         block_layers=complex_rope_Layer_scale_init_Block,
         Attention_block=RoPEAttention,
+        act_layer=CGELU,
         complex_rope_theta=10.0,
         complex_rope_mixed=True,
         use_ape=True,
@@ -1394,6 +1402,7 @@ def complex_rope_mixed_ape_deit_small_patch4_LS(
         Attention_block=RoPEAttention,
         complex_rope_theta=10.0,
         complex_rope_mixed=True,
+        act_layer=CGELU,
         use_ape=True,
         **kwargs,
     )
@@ -1446,12 +1455,33 @@ def complex_rope_mixed_deit_small_patch4_LS(
     return model
 
 @register_model
+def complex_freakformer_small_patch1_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = vit_models(
+        img_size=img_size,
+        patch_size=1,
+        embed_dim=384,
+        depth=12,
+        num_heads=6,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=Attention,
+        act_layer=CGELU,
+        Patch_layer=FreqEmbed,
+        **kwargs,
+    )
+
+    return model@register_model
+
+@register_model
 def complex_freakformer_small_patch2_LS(
     pretrained=False, img_size=224, pretrained_21k=False, **kwargs
 ):
     model = vit_models(
         img_size=img_size,
-        in_chans=3,
         patch_size=2,
         embed_dim=384,
         depth=12,
@@ -1473,11 +1503,32 @@ def complex_freakformer_small_patch4_LS(
 ):
     model = vit_models(
         img_size=img_size,
-        in_chans=3,
         patch_size=4,
         embed_dim=384,
         depth=12,
         num_heads=6,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=Attention,
+        act_layer=CGELU,
+        Patch_layer=FreqEmbed,
+        **kwargs,
+    )
+
+    return model
+
+@register_model
+def complex_freakformer_base_patch1_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = vit_models(
+        img_size=img_size,
+        patch_size=1,
+        embed_dim=768,
+        depth=12,
+        num_heads=12,
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(ComplexLayerNorm, eps=1e-6),
@@ -1496,7 +1547,6 @@ def complex_freakformer_base_patch2_LS(
 ):
     model = vit_models(
         img_size=img_size,
-        in_chans=3,
         patch_size=2,
         embed_dim=768,
         depth=12,
@@ -1519,7 +1569,6 @@ def complex_freakformer_base_patch4_LS(
 ):
     model = vit_models(
         img_size=img_size,
-        in_chans=3,
         patch_size=4,
         embed_dim=768,
         depth=12,

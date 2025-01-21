@@ -9,4 +9,4 @@ torchrun \
 --rdzv_id $RANDOM \
 --rdzv_backend c10d \
 --rdzv_endpoint "localhost:64425" \
-example.py
+example.py --dataset_path ./
