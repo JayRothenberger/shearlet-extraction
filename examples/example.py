@@ -180,7 +180,7 @@ def epoch_accuracy(loader_s, student):
 
 
 def test(network, test_loader):
-    network.eval(torch.cuda.current_device())
+    network.eval()
     test_loss = 0
     correct = 0
     total = 0
@@ -468,7 +468,7 @@ def create_parser():
     parser.add_argument(
         "--path",
         type=str,
-        default="./shearlet_hp2train",
+        default="./shearlet_hp3",
         help="path for hparam search directory",
     )
     parser.add_argument(
