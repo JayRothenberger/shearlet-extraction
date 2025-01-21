@@ -255,7 +255,7 @@ class Unraveling:
 
         for i in range(len(self.levels) // self.patch_size):
             # the elements here are tuples of tensors
-            levels.append((torch.cat([self.levels[j][0] for j in range(i*4, (i+1)*4)], 0), torch.cat([self.levels[j][1] for j in range(i*4, (i+1)*4)], 0)))
+            levels.append((torch.cat([self.levels[j][0] for j in range(i*patch_size, (i+1)*patch_size)], 0), torch.cat([self.levels[j][1] for j in range(i*patch_size, (i+1)*patch_size)], 0)))
 
         self.levels = levels
     
