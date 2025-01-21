@@ -285,7 +285,7 @@ def training_process(args):
         print(args.dataset_path)
 
         if args.dataset == 'food101':
-            args.dataset = args.dataset + spec_dir[args.dataset]["download_path"].split("/")[-1]
+            args.dataset_path = args.dataset_path + '/' + spec_dir[args.dataset]["download_path"].split("/")[-1]
 
     else:
         while not os.path.isfile('done'):
