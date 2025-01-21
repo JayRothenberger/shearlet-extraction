@@ -1474,7 +1474,7 @@ def complex_freakformer_small_patch1_LS(
         **kwargs,
     )
 
-    return model@register_model
+    return model
 
 @register_model
 def complex_freakformer_small_patch2_LS(
@@ -1496,8 +1496,9 @@ def complex_freakformer_small_patch2_LS(
         **kwargs,
     )
 
-    return model@register_model
+    return model
 
+@register_model
 def complex_freakformer_small_patch4_LS(
     pretrained=False, img_size=224, pretrained_21k=False, **kwargs
 ):
