@@ -1,6 +1,7 @@
 from shearletNN.shearlets import getcomplexshearlets2D
 from shearletNN.shearlet_utils import (
     frequency_shearlet_transform,
+    shifted_frequency_shearlet_transform,
     spatial_shearlet_transform,
     ShearletTransformLoader,
 )
@@ -246,6 +247,39 @@ def cleanup():
 ### end training utilities, end TODO
 
 
+def linearleaves(module):
+    # returns a list of pairs of (parent, submodule_name) pairs for all submodule leaves of the current module
+    if isinstance(module, torch.nn.Linear):
+        return [(module, None)]
+
+    linear_children = []
+    for name, mod in module.named_modules():
+        if isinstance(mod, torch.nn.Linear) or isinstance(mod, torch.nn.Conv2d):
+            linear_children.append((name, module))
+    return linear_children
+        
+
+def getattrrecur(mod, s):
+    s = s.split('.')
+    for substr in s:
+        mod = getattr(mod, substr)
+    return mod
+
+
+def setattrrecur(mod, s, value):
+    s = s.split('.')
+    for substr in s[:-1]:
+        mod = getattr(mod, substr)
+    setattr(mod, s[-1], value)
+
+
+def spectral_normalize(model):
+    for name, mod in linearleaves(model):
+        setattrrecur(model, name, torch.nn.utils.parametrizations.spectral_norm(getattrrecur(mod, name)))
+    
+    return model
+
+
 def training_process(args):
     # experimental setup logistics
 
@@ -268,7 +302,7 @@ def training_process(args):
     if rank == 0:
         LSCRATCH = os.environ['LSCRATCH'] + '/'
         os.mkdir(f'{LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}')
-        os.system(f'rsync -aP {spec_dir[args.dataset]["download_path"]}/* {LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}')
+        os.system(f'scp -r {spec_dir[args.dataset]["download_path"]}/* {LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}')
 
         print(glob.glob(f'{LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}/*.tar.gz'))
         print(glob.glob(LSCRATCH))
@@ -384,7 +418,7 @@ def training_process(args):
 
     # shearlet input experiments
     def shearlet_transform(img):
-        return frequency_shearlet_transform(img.to(torch.cuda.current_device()), shearlets.to(torch.cuda.current_device()), patch_size)
+        return shifted_frequency_shearlet_transform(img.to(torch.cuda.current_device()), shearlets.to(torch.cuda.current_device()), patch_size)
 
     train_loader = ShearletTransformLoader(train_loader, shearlet_transform)
 
@@ -395,7 +429,7 @@ def training_process(args):
         assert list(x.shape) == [batch_size_train, 3 * shearlets.shape[0], patch_size, patch_size], x.shape
         break
 
-    model = model_dir[args.model_type](img_size=patch_size, in_chans=3 * shearlets.shape[0], in_dim=3 * shearlets.shape[0], num_classes=spec_dir[args.dataset]["classes"])
+    model = spectral_normalize(model_dir[args.model_type](img_size=patch_size, in_chans=3 * shearlets.shape[0], in_dim=3 * shearlets.shape[0], num_classes=spec_dir[args.dataset]["classes"]))
 
     for p in model.parameters():
         assert not p.isnan().any()

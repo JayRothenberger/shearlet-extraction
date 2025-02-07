@@ -1,10 +1,9 @@
 #!/bin/bash
-#SBATCH --partition=ai2es
+#SBATCH --partition=ai2es_h100
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 # Thread count:
 #SBATCH --cpus-per-task=32
-#SBATCH --exclusive
 #SBATCH --gres=gpu:1
 # memory in MB
 #SBATCH --mem=64G
