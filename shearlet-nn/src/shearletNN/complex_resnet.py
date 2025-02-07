@@ -178,8 +178,8 @@ class ResNet(nn.Module):
             )
         self.groups = groups
         self.base_width = width_per_group
-        self.complex_concat = ComplexConcat(1)
-        self.conv1 = nn.Conv2d(self.in_dim * 2, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
+
+        self.conv1 = nn.Conv2d(self.in_dim, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=False)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -250,9 +250,7 @@ class ResNet(nn.Module):
 
     def _forward_impl(self, x: Tensor) -> Tensor:
         # See note [TorchScript super()]
-        if not self.phasor:
-            x = phasor_to_magnitude_phase(x)
-        x = self.complex_concat(x)
+
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -522,7 +520,7 @@ class ComplexResNet(nn.Module):
             x = phasor_to_magnitude_phase(x)
         x = self.complex_concat(x)
         x = x.flatten(1).type(self.fc.weight.dtype)
-        x = self.fc(x)
+        x = self.fc(x.type(torch.float32))
 
         return x
 
@@ -552,6 +550,7 @@ _COMMON_META = {
     "min_size": (1, 1),
     "categories": _IMAGENET_CATEGORIES,
 }
+
 
 
 @register_model()

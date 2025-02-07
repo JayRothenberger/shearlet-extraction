@@ -211,10 +211,10 @@ class ComplexBatchNormalization(torch.nn.Module):
             self.moving_var = self.moving_var * self.momentum + var.detach() * (1. - self.momentum)
 
             out = self._normalize(inputs, var, mean) # B, C, H, W
-            out = inputs
+            # out = inputs
         else:
             out = self._normalize(inputs, self.moving_var, self.moving_mean.unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
-            out = inputs
+            # out = inputs
 
         if self.scale:
             gamma = torch.complex(self.gamma_r, self.gamma_i).type(self.my_dtype)
@@ -330,11 +330,12 @@ class ComplexLayerNorm(torch.nn.Module):
         # First get the mean and var
         mean = torch.complex(torch.mean(inputs.real, dim=-1, keepdim=True), 
                                 torch.mean(inputs.imag, dim=-1, keepdim=True)
-                                ).to(self.my_dtype) # 1, C, 1, 1
+                                ).to(self.my_dtype) # B, 1, 1
+        
         var = batch_cov_3d(torch.stack((inputs.real, inputs.imag), dim=-1)) # C, 2, 2
 
         out = self._normalize(inputs, var, mean) # B, C, H, W
-        out = inputs
+        # out = inputs
 
         if self.elementwise_affine:
             gamma = torch.complex(self.gamma_r, self.gamma_i).type(self.my_dtype)
@@ -484,7 +485,7 @@ class CGELU(torch.nn.Module):
         self.iGELU = torch.nn.GELU(**kwargs)
 
     def forward(self, x):
-        assert not x.isnan().any(), 'nan in gelu input'
+        # assert not x.isnan().any(), 'nan in gelu input'
         out = torch.complex(self.rGELU(x.real), self.iGELU(x.imag))
         assert not out.isnan().any(), 'nan in gelu'
         return out

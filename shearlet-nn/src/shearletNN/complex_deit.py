@@ -30,13 +30,14 @@ from typing import Callable, List, Optional, Tuple, Union
 from timm.models.vision_transformer import _cfg
 from timm.models.layers import DropPath, to_2tuple
 from timm.models.registry import register_model
+
 # from timm.models.layers.trace_utils import _assert
 from timm.layers import Format, nchw_to
 
 import math
 import logging
 
-from .layers import ComplexLayerNorm, ComplexDropout, ComplexConcat, CGELU
+from .layers import ComplexLayerNorm, ComplexDropout, ComplexConcat, CGELU, CReLU
 from .shearlet_utils import trunc_normal_
 
 _logger = logging.getLogger(__name__)
@@ -157,7 +158,12 @@ class PatchEmbed(nn.Module):
         self.dynamic_img_pad = dynamic_img_pad
 
         self.proj = nn.Conv2d(
-            in_chans, embed_dim, kernel_size=patch_size, stride=patch_size, bias=bias, dtype=torch.complex64
+            in_chans,
+            embed_dim,
+            kernel_size=patch_size,
+            stride=patch_size,
+            bias=bias,
+            dtype=torch.complex64,
         )
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
@@ -186,7 +192,7 @@ class PatchEmbed(nn.Module):
                     kernel_size=new_patch_size,
                     stride=new_patch_size,
                     bias=self.proj.bias is not None,
-                    dtype=torch.complex64
+                    dtype=torch.complex64,
                 )
                 new_proj.weight.copy_(
                     resample_patch_embed(self.proj.weight, new_patch_size, verbose=True)
@@ -234,38 +240,8 @@ class PatchEmbed(nn.Module):
         return x
 
 
-class Unraveling:
-    def __init__(self, n, patch_size=1):
-        self.levels = []
-        self.patch_size = patch_size
-
-        for i in range(0, n // 2):
-            level = []
-            for j in range(i, n - i):
-                level.append((j, i))
-                level.append((i, j))
-
-                level.append((j, n - (i + 1)))
-                level.append((n - (i + 1), j))
-
-            level = list(set(level))
-            self.levels.append((torch.tensor([x for x, _ in level]), torch.tensor([y for _, y in level])))
-
-        levels = []
-
-        for i in range(len(self.levels) // self.patch_size):
-            # the elements here are tuples of tensors
-            levels.append((torch.cat([self.levels[j][0] for j in range(i*patch_size, (i+1)*patch_size)], 0), torch.cat([self.levels[j][1] for j in range(i*patch_size, (i+1)*patch_size)], 0)))
-
-        self.levels = levels
-    
-    def __call__(self, x):
-        return [x[..., a, b] for a, b in self.levels]
-    
-
-class FreqEmbed(nn.Module):
-    """2D Shearlet Coefficients Image to Patch Embedding"""
-    # TODO: support patch size here where we concat each pair of 
+class LPatchEmbed(nn.Module):
+    """2D Image to Patch Embedding"""
 
     output_fmt: Format
     dynamic_img_pad: torch.jit.Final[bool]
@@ -286,9 +262,6 @@ class FreqEmbed(nn.Module):
         super().__init__()
         self.patch_size = to_2tuple(patch_size)
         self.img_size, self.grid_size, self.num_patches = self._init_img_size(img_size)
-        self.img_size = (img_size, img_size)
-        self.grid_size = (img_size // 2, 1)
-        self.num_patches = img_size // 2
 
         if output_fmt is not None:
             self.flatten = False
@@ -300,9 +273,14 @@ class FreqEmbed(nn.Module):
         self.strict_img_size = strict_img_size
         self.dynamic_img_pad = dynamic_img_pad
 
-        self.unravel = Unraveling(img_size)
-        self.layers = torch.nn.ModuleList([torch.nn.Linear(len(level[0]) * in_chans, embed_dim, bias=bias, dtype=torch.complex64) for level in self.unravel.levels])
-
+        self.proj = nn.Conv2d(
+            in_chans,
+            embed_dim,
+            kernel_size=patch_size,
+            stride=patch_size,
+            bias=bias,
+            dtype=torch.complex64,
+        )
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
     def _init_img_size(self, img_size: Union[int, Tuple[int, int]]):
@@ -311,7 +289,9 @@ class FreqEmbed(nn.Module):
             return None, None, None
         img_size = to_2tuple(img_size)
         grid_size = tuple([s // p for s, p in zip(img_size, self.patch_size)])
-        num_patches = grid_size[0] * grid_size[1]
+        num_patches = (grid_size[0] * grid_size[1]) - (
+            (grid_size[0] - 1) * (grid_size[1] - 1)
+        )
         return img_size, grid_size, num_patches
 
     def set_input_size(
@@ -330,7 +310,7 @@ class FreqEmbed(nn.Module):
                     kernel_size=new_patch_size,
                     stride=new_patch_size,
                     bias=self.proj.bias is not None,
-                    dtype=torch.complex64
+                    dtype=torch.complex64,
                 )
                 new_proj.weight.copy_(
                     resample_patch_embed(self.proj.weight, new_patch_size, verbose=True)
@@ -361,15 +341,599 @@ class FreqEmbed(nn.Module):
             )
         else:
             return img_size[0] // self.patch_size[0], img_size[1] // self.patch_size[1]
-        
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+
+        if self.dynamic_img_pad:
+            pad_h = (self.patch_size[0] - H % self.patch_size[0]) % self.patch_size[0]
+            pad_w = (self.patch_size[1] - W % self.patch_size[1]) % self.patch_size[1]
+            x = F.pad(x, (0, pad_w, 0, pad_h))
+
+        x0 = x[..., : self.patch_size[0], :]
+        x1 = x[..., self.patch_size[0] :, : self.patch_size[1]]
+
+        x0 = self.proj(x0)
+        x1 = self.proj(x1)
+
+        if self.flatten:
+            x = torch.cat(
+                (x0.flatten(2).transpose(1, 2), x1.flatten(2).transpose(1, 2)), 1
+            )  # NCHW -> NLC
+        elif self.output_fmt != Format.NCHW:
+            x = nchw_to(x, self.output_fmt)
+        x = self.norm(x)
+        return x
+
+
+class Unraveling:
+    def __init__(self, n, patch_size=1):
+        self.levels = []
+        self.patch_size = patch_size
+
+        for i in range(0, n // 2):
+            level = []
+            for j in range(i, n - i):
+                if (j >= (n // 2)):
+                    level.append((j, i))  # low, low-high
+                    level.append((n - (i + 1), j)) # low, low-high
+                    level.append((j, n - (i + 1)))
+                elif j < (n // 2):
+                    level.append((j, i))  # high, low
+                    level.append((i, j))  # high, high
+                    level.append((n - (i + 1), j))
+
+
+            level = list(set(level))
+            self.levels.append(
+                (
+                    torch.tensor([x for x, _ in level]),
+                    torch.tensor([y for _, y in level]),
+                )
+            )
+
+        levels = []
+
+        for i in range(len(self.levels) // self.patch_size):
+            # the elements here are tuples of tensors
+            levels.append(
+                (
+                    torch.cat(
+                        [
+                            self.levels[j][0]
+                            for j in range(i * patch_size, (i + 1) * patch_size)
+                        ],
+                        0,
+                    ),
+                    torch.cat(
+                        [
+                            self.levels[j][1]
+                            for j in range(i * patch_size, (i + 1) * patch_size)
+                        ],
+                        0,
+                    ),
+                )
+            )
+
+        self.levels = levels
+
+    def __call__(self, x):
+        return [x[..., a, b] for a, b in self.levels]
+
+
+class DirectionalUnraveling:
+    """
+    Note: expects FFT-shifted inputs
+    """
+
+    def __init__(self, n, channels, scales, patch_size=1):
+        self.quadrants = []
+        self.patch_size = patch_size
+
+        print(channels // (3 * scales))
+
+        groups = int(channels // 3)
+
+        for quadrant in range(3):
+            directions = []
+            for c in range(0, channels // (3 * scales)):
+                levels = []
+                for i in range(0, n // 2):
+                    level = []
+                    for j in range(i, n - i):
+                        if quadrant == 0:
+                            level.append((j, i, c))  # low-high, low (R)
+                            level.append((j, i, c + (1 * groups)))  # low-high, low (G)
+                            level.append((j, i, c + (2 * groups)))  # low-high, low (B)
+
+                        if quadrant == 1:
+                            level.append((i, j, c))  # low, low-high (R)
+                            level.append((i, j, c + (1 * groups)))  # low, low-high (G)
+                            level.append((i, j, c + (2 * groups)))  # low, low-high (B)
+
+                        # these are the high, high associated coordinates.
+                        # ignore the high, high frequency coordinates and only keep the low, high
+                        if quadrant == 2:
+                            if (j > (n // 2)) or ((n - (i + 1)) > (n // 2)):
+                                level.append((j, n - (i + 1), c))
+                                level.append((n - (i + 1), j, c))
+
+                                level.append((j, n - (i + 1), c + (1 * groups)))
+                                level.append((n - (i + 1), j, c + (1 * groups)))
+
+                                level.append((j, n - (i + 1), c + (2 * groups)))
+                                level.append((n - (i + 1), j, c + (2 * groups)))
+
+                    level = list(set(level))
+                    levels.append(
+                        (
+                            torch.tensor([x for x, _, _ in level]).type(torch.int32),
+                            torch.tensor([y for _, y, _ in level]).type(torch.int32),
+                            torch.tensor([z for _, _, z in level]).type(torch.int32),
+                        )
+                    )
+                directions.append(levels)
+            self.quadrants.append(directions)
+
+        levels = []
+
+        print(len(self.quadrants))
+
+        for quadrant in self.quadrants:
+            for direction in quadrant:
+                for i in range((len(direction) // self.patch_size)):
+                    # the elements here are tuples of tensors
+                    if i == 0: # for the first patch (the smallest, least important section) we will do double the patch size (TODO)
+                        levels.append(
+                            (
+                                torch.cat(
+                                    [
+                                        direction[j][0]
+                                        for j in range(i * patch_size, (i + 1) * patch_size)
+                                    ],
+                                    0,
+                                ),
+                                torch.cat(
+                                    [
+                                        direction[j][1]
+                                        for j in range(i * patch_size, (i + 1) * patch_size)
+                                    ],
+                                    0,
+                                ),
+                                torch.cat(
+                                    [
+                                        direction[j][2]
+                                        for j in range(i * patch_size, (i + 1) * patch_size)
+                                    ],
+                                    0,
+                                ),
+                            )
+                        )
+                    else:
+                        levels.append(
+                            (
+                                torch.cat(
+                                    [
+                                        direction[j][0]
+                                        for j in range(i * patch_size, (i + 1) * patch_size)
+                                    ],
+                                    0,
+                                ),
+                                torch.cat(
+                                    [
+                                        direction[j][1]
+                                        for j in range(i * patch_size, (i + 1) * patch_size)
+                                    ],
+                                    0,
+                                ),
+                                torch.cat(
+                                    [
+                                        direction[j][2]
+                                        for j in range(i * patch_size, (i + 1) * patch_size)
+                                    ],
+                                    0,
+                                ),
+                            )
+                        )
+
+        self.levels = levels
+
+    def __call__(self, x):
+        return [x[..., c, a, b] for a, b, c in self.levels]
+
+
+class LUnraveling:
+    def __init__(self, n, slices, patch_size=1):
+        self.levels_up = []
+        self.levels_right = []
+        self.patch_size = patch_size
+        self.slices = slices
+
+        print(n, slices)
+
+        for i in range(0, slices):
+            level_up = []
+            level_right = []
+            for j in range(0, n):
+                level_up.append((j, i))
+                level_right.append((((n - slices) + i), j))
+
+            level_up = list(set(level_up))
+            level_right = list(set(level_right))
+
+            self.levels_up.append(
+                (
+                    torch.tensor([x for x, _ in level_up]),
+                    torch.tensor([y for _, y in level_up]),
+                )
+            )
+            self.levels_right.append(
+                (
+                    torch.tensor([x for x, _ in level_right]),
+                    torch.tensor([y for _, y in level_right]),
+                )
+            )
+
+        levels = []
+        assert len(self.levels_up) == len(self.levels_right), (
+            "Expected same number of spectral slices in both directions.  Is input square?"
+        )
+        for i in range(len(self.levels_up) // self.patch_size):
+            # the elements here are tuples of tensors
+            levels.append(
+                (
+                    torch.cat(
+                        [
+                            self.levels_up[j][0]
+                            for j in range(i * patch_size, (i + 1) * patch_size)
+                        ],
+                        0,
+                    ),
+                    torch.cat(
+                        [
+                            self.levels_up[j][1]
+                            for j in range(i * patch_size, (i + 1) * patch_size)
+                        ],
+                        0,
+                    ),
+                )
+            )
+            levels.append(
+                (
+                    torch.cat(
+                        [
+                            self.levels_right[j][0]
+                            for j in range(i * patch_size, (i + 1) * patch_size)
+                        ],
+                        0,
+                    ),
+                    torch.cat(
+                        [
+                            self.levels_right[j][1]
+                            for j in range(i * patch_size, (i + 1) * patch_size)
+                        ],
+                        0,
+                    ),
+                )
+            )
+
+        self.levels = levels
+
+    def __call__(self, x):
+        return [x[..., a, b] for a, b in self.levels]
+
+
+class LFreqEmbed(nn.Module):
+    """2D Shearlet Coefficients Image to Patch Embedding"""
+
+    # TODO: support patch size here where we concat each pair of
+
+    output_fmt: Format
+    dynamic_img_pad: torch.jit.Final[bool]
+
+    def __init__(
+        self,
+        img_size: Optional[int] = 224,
+        patch_size: int = 2,
+        in_chans: int = 3,
+        embed_dim: int = 768,
+        norm_layer: Optional[Callable] = None,
+        flatten: bool = True,
+        output_fmt: Optional[str] = None,
+        bias: bool = True,
+        strict_img_size: bool = True,
+        dynamic_img_pad: bool = False,
+    ):
+        super().__init__()
+        slices = img_size // 2
+        self.patch_size = to_2tuple(patch_size)
+        self.img_size, self.grid_size, self.num_patches = self._init_img_size(img_size)
+        self.img_size = (img_size, img_size)
+        self.grid_size = (img_size // 2, 1)
+        self.num_patches = 2 * math.ceil(slices / patch_size)
+
+        if output_fmt is not None:
+            self.flatten = False
+            self.output_fmt = Format(output_fmt)
+        else:
+            # flatten spatial dim and transpose to channels last, kept for bwd compat
+            self.flatten = flatten
+            self.output_fmt = Format.NCHW
+        self.strict_img_size = strict_img_size
+        self.dynamic_img_pad = dynamic_img_pad
+
+        self.unravel = LUnraveling(img_size, slices, patch_size)
+        """
+        self.layers = torch.nn.ModuleList([torch.nn.Sequential(torch.nn.Linear(len(level[0]) * in_chans, embed_dim, bias=bias, dtype=torch.complex64), 
+                                                               CGELU(), 
+                                                               torch.nn.Linear(embed_dim, embed_dim, bias=bias, dtype=torch.complex64),
+                                                               )
+                                            for level in self.unravel.levels])
+        """
+        self.layer = torch.nn.Linear(
+            len(self.unravel.levels[0][0]) * in_chans,
+            embed_dim,
+            bias=bias,
+            dtype=torch.complex64,
+        )
+
+        self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
+
+    def _init_img_size(self, img_size: Union[int, Tuple[int, int]]):
+        assert self.patch_size
+        if img_size is None:
+            return None, None, None
+        img_size = to_2tuple(img_size)
+        grid_size = tuple([s // p for s, p in zip(img_size, self.patch_size)])
+        num_patches = grid_size[0] * grid_size[1]
+        return img_size, grid_size, num_patches
+
+    def set_input_size(
+        self,
+        img_size: Optional[Union[int, Tuple[int, int]]] = None,
+        patch_size: Optional[Union[int, Tuple[int, int]]] = None,
+    ):
+        new_patch_size = None
+        if patch_size is not None:
+            new_patch_size = to_2tuple(patch_size)
+        if new_patch_size is not None and new_patch_size != self.patch_size:
+            with torch.no_grad():
+                new_proj = nn.Conv2d(
+                    self.proj.in_channels,
+                    self.proj.out_channels,
+                    kernel_size=new_patch_size,
+                    stride=new_patch_size,
+                    bias=self.proj.bias is not None,
+                    dtype=torch.complex64,
+                )
+                new_proj.weight.copy_(
+                    resample_patch_embed(self.proj.weight, new_patch_size, verbose=True)
+                )
+                if self.proj.bias is not None:
+                    new_proj.bias.copy_(self.proj.bias)
+                self.proj = new_proj
+            self.patch_size = new_patch_size
+        img_size = img_size or self.img_size
+        if img_size != self.img_size or new_patch_size is not None:
+            self.img_size, self.grid_size, self.num_patches = self._init_img_size(
+                img_size
+            )
+
+    def feat_ratio(self, as_scalar=True) -> Union[Tuple[int, int], int]:
+        if as_scalar:
+            return max(self.patch_size)
+        else:
+            return self.patch_size
+
+    def dynamic_feat_size(self, img_size: Tuple[int, int]) -> Tuple[int, int]:
+        """Get grid (feature) size for given image size taking account of dynamic padding.
+        NOTE: must be torchscript compatible so using fixed tuple indexing
+        """
+        if self.dynamic_img_pad:
+            return math.ceil(img_size[0] / self.patch_size[0]), math.ceil(
+                img_size[1] / self.patch_size[1]
+            )
+        else:
+            return img_size[0] // self.patch_size[0], img_size[1] // self.patch_size[1]
+
     def forward(self, x):
         B, C, H, W = x.shape
 
         unraveled = self.unravel(x)
-        tokens = torch.stack([layer(level.flatten(1)) for layer, level in zip(self.layers, unraveled)], -2)
-        
+        tokens = self.layer(torch.stack([level.flatten(1) for level in unraveled], -2))
+        tokens = self.norm(tokens)
 
-        return x
+        return tokens
+
+
+class FreqEmbed(nn.Module):
+    """2D Shearlet Coefficients Image to Patch Embedding"""
+
+    # TODO: support patch size here where we concat each pair of
+
+    output_fmt: Format
+    dynamic_img_pad: torch.jit.Final[bool]
+
+    def __init__(
+        self,
+        img_size: Optional[int] = 224,
+        patch_size: int = 16,
+        in_chans: int = 3,
+        embed_dim: int = 768,
+        norm_layer: Optional[Callable] = None,
+        flatten: bool = True,
+        output_fmt: Optional[str] = None,
+        bias: bool = True,
+        strict_img_size: bool = True,
+        dynamic_img_pad: bool = False,
+    ):
+        super().__init__()
+        self.patch_size = to_2tuple(patch_size)
+        self.img_size, self.grid_size, self.num_patches = self._init_img_size(img_size)
+        self.img_size = (img_size, img_size)
+        self.num_patches = math.ceil((img_size // 2) / patch_size)
+        self.grid_size = (self.num_patches, 1)
+
+        if output_fmt is not None:
+            self.flatten = False
+            self.output_fmt = Format(output_fmt)
+        else:
+            # flatten spatial dim and transpose to channels last, kept for bwd compat
+            self.flatten = flatten
+            self.output_fmt = Format.NCHW
+        self.strict_img_size = strict_img_size
+        self.dynamic_img_pad = dynamic_img_pad
+
+        self.unravel = Unraveling(img_size, patch_size)
+        self.layers = torch.nn.ModuleList(
+            [
+                torch.nn.Linear(
+                    len(level[0]) * in_chans,
+                    embed_dim,
+                    bias=bias,
+                    dtype=torch.complex64,
+                )
+                for level in self.unravel.levels
+            ]
+        )
+
+        self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
+
+    def _init_img_size(self, img_size: Union[int, Tuple[int, int]]):
+        assert self.patch_size
+        if img_size is None:
+            return None, None, None
+        img_size = to_2tuple(img_size)
+        grid_size = tuple([s // p for s, p in zip(img_size, self.patch_size)])
+        num_patches = grid_size[0] * grid_size[1]
+        return img_size, grid_size, num_patches
+
+    def set_input_size(
+        self,
+        img_size: Optional[Union[int, Tuple[int, int]]] = None,
+        patch_size: Optional[Union[int, Tuple[int, int]]] = None,
+    ):
+        new_patch_size = None
+        if patch_size is not None:
+            new_patch_size = to_2tuple(patch_size)
+        if new_patch_size is not None and new_patch_size != self.patch_size:
+            with torch.no_grad():
+                new_proj = nn.Conv2d(
+                    self.proj.in_channels,
+                    self.proj.out_channels,
+                    kernel_size=new_patch_size,
+                    stride=new_patch_size,
+                    bias=self.proj.bias is not None,
+                    dtype=torch.complex64,
+                )
+                new_proj.weight.copy_(
+                    resample_patch_embed(self.proj.weight, new_patch_size, verbose=True)
+                )
+                if self.proj.bias is not None:
+                    new_proj.bias.copy_(self.proj.bias)
+                self.proj = new_proj
+            self.patch_size = new_patch_size
+        img_size = img_size or self.img_size
+        if img_size != self.img_size or new_patch_size is not None:
+            self.img_size, self.grid_size, self.num_patches = self._init_img_size(
+                img_size
+            )
+
+    def feat_ratio(self, as_scalar=True) -> Union[Tuple[int, int], int]:
+        if as_scalar:
+            return max(self.patch_size)
+        else:
+            return self.patch_size
+
+    def dynamic_feat_size(self, img_size: Tuple[int, int]) -> Tuple[int, int]:
+        """Get grid (feature) size for given image size taking account of dynamic padding.
+        NOTE: must be torchscript compatible so using fixed tuple indexing
+        """
+        if self.dynamic_img_pad:
+            return math.ceil(img_size[0] / self.patch_size[0]), math.ceil(
+                img_size[1] / self.patch_size[1]
+            )
+        else:
+            return img_size[0] // self.patch_size[0], img_size[1] // self.patch_size[1]
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+
+        unraveled = self.unravel(x)
+        tokens = torch.stack(
+            [layer(level.flatten(1)) for layer, level in zip(self.layers, unraveled)],
+            -2,
+        )
+
+        return tokens
+
+
+class DirectionalFreqEmbed(nn.Module):
+    """2D Shearlet Coefficients Image to Patch Embedding with Directional Tokens"""
+
+    # TODO: support patch size here where we concat each pair of
+
+    output_fmt: Format
+    dynamic_img_pad: torch.jit.Final[bool]
+
+    def __init__(
+        self,
+        img_size: Optional[int] = 224,
+        patch_size: int = 16,
+        in_chans: int = 3,
+        embed_dim: int = 768,
+        norm_layer: Optional[Callable] = None,
+        flatten: bool = True,
+        output_fmt: Optional[str] = None,
+        bias: bool = True,
+        strict_img_size: bool = True,
+        dynamic_img_pad: bool = False,
+        scales: int = 1,
+    ):
+        super().__init__()
+        self.patch_size = to_2tuple(patch_size)
+        self.img_size = (img_size, img_size)
+        self.grid_size = (img_size // 2, 1)
+        self.num_patches = math.ceil((img_size // 2) / patch_size) * 3 * (in_chans // (scales * 3)) # patches per quadrant * quadrants * directions
+
+        if output_fmt is not None:
+            self.flatten = False
+            self.output_fmt = Format(output_fmt)
+        else:
+            # flatten spatial dim and transpose to channels last, kept for bwd compat
+            self.flatten = flatten
+            self.output_fmt = Format.NCHW
+        self.strict_img_size = strict_img_size
+        self.dynamic_img_pad = dynamic_img_pad
+
+        self.unravel = DirectionalUnraveling(img_size, in_chans, scales, patch_size)
+
+        assert len(self.unravel.levels) == self.num_patches, f'expected number of patches to match number of levels in the unraveling ({self.num_patches} and {len(self.unravel.levels)})'
+
+        self.layers = torch.nn.ModuleList(
+            [
+                torch.nn.Linear(
+                    len(level[0]) * (in_chans // (scales * 30)),
+                    embed_dim,
+                    bias=bias,
+                    dtype=torch.complex64,
+                )
+                for level in self.unravel.levels
+            ]
+        )
+
+        self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+
+        unraveled = self.unravel(x)
+        tokens = torch.stack(
+            [layer(level.flatten(1)) for layer, level in zip(self.layers, unraveled)],
+            -2,
+        )
+
+        return tokens
 
 
 class Mlp(nn.Module):
@@ -393,13 +957,17 @@ class Mlp(nn.Module):
         drop_probs = to_2tuple(drop)
         linear_layer = partial(nn.Conv2d, kernel_size=1) if use_conv else nn.Linear
 
-        self.fc1 = linear_layer(in_features, hidden_features, bias=bias[0], dtype=torch.complex64)
+        self.fc1 = linear_layer(
+            in_features, hidden_features, bias=bias[0], dtype=torch.complex64
+        )
         self.act = act_layer()
         self.drop1 = ComplexDropout(drop_probs[0])
         self.norm = (
             norm_layer(hidden_features) if norm_layer is not None else nn.Identity()
         )
-        self.fc2 = linear_layer(hidden_features, out_features, bias=bias[1], dtype=torch.complex64)
+        self.fc2 = linear_layer(
+            hidden_features, out_features, bias=bias[1], dtype=torch.complex64
+        )
         self.drop2 = ComplexDropout(drop_probs[1])
 
     def forward(self, x):
@@ -454,8 +1022,56 @@ class Attention(nn.Module):
 
         # phase preserving softmax operation
         mag = attn.abs()
-        attn = mag.softmax(-1).type(x.dtype) # * (attn / mag)
-        
+        attn = mag.softmax(-1).type(x.dtype)  # * (attn / mag)
+
+        attn = self.attn_drop(attn)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+class FreqAttention(nn.Module):
+    # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
+    def __init__(
+        self,
+        dim,
+        num_heads=8,
+        qkv_bias=False,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+    ):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = qk_scale or head_dim**-0.5
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias, dtype=torch.complex64)
+        self.attn_drop = ComplexDropout(attn_drop)
+        self.proj = nn.Linear(dim, dim, dtype=torch.complex64)
+        self.proj_drop = ComplexDropout(proj_drop)
+
+    def forward(self, x):
+        B, N, C = x.shape
+        qkv = (
+            self.qkv(x)
+            .reshape(B, N, 3, self.num_heads, C // self.num_heads)
+            .permute(2, 0, 3, 1, 4)
+        )
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        q = q * self.scale
+        # let's replace this with an elementwise subtraction instead of a multiplication
+        # attn = (q.transpose(-2, -1).unsqueeze(-2) - k.transpose(-2, -1).unsqueeze(-1))
+        # attn = (attn * torch.conj(attn)).sum(-3)
+        attn = q.abs() @ k.transpose(-2, -1).abs()
+
+        # phase preserving softmax operation
+        # mag = attn.abs()
+        attn = attn.real.softmax(-1).type(x.dtype)  # * (attn / mag)
+
         attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -705,7 +1321,6 @@ class Block_paralx2(nn.Module):
         return x
 
 
-
 class vit_models(nn.Module):
     """Vision Transformer with LayerScale (https://arxiv.org/abs/2103.17239) support
     taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
@@ -754,10 +1369,18 @@ class vit_models(nn.Module):
         )
 
         num_patches = self.patch_embed.num_patches
+        pos_dim = 8
 
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim, dtype=torch.complex64))
+        self.cls_token = nn.Parameter(
+            torch.zeros(1, 1, embed_dim, dtype=torch.complex64)
+        )
 
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim, dtype=torch.complex64))
+        self.pos_embed = nn.Parameter(
+            torch.zeros(1, num_patches, embed_dim, dtype=torch.complex64)
+        )
+        self.pos_linear = torch.nn.Linear(
+            embed_dim + pos_dim, embed_dim, dtype=torch.complex64
+        )
 
         dpr = [drop_path_rate for i in range(depth)]
         self.blocks = nn.ModuleList(
@@ -786,7 +1409,7 @@ class vit_models(nn.Module):
 
         self.feature_info = [dict(num_chs=embed_dim, reduction=0, module="head")]
         self.head = (
-            nn.Linear(2 * embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+            nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
         )
 
         trunc_normal_(self.pos_embed, std=0.02)
@@ -817,7 +1440,7 @@ class vit_models(nn.Module):
     def reset_classifier(self, num_classes, global_pool=""):
         self.num_classes = num_classes
         self.head = (
-            nn.Linear(2 * self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+            nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
         )
 
     def forward_features(self, x):
@@ -834,7 +1457,7 @@ class vit_models(nn.Module):
             x = blk(x)
 
         x = self.norm(x)
-        x = self.concat(x)
+        x = (x * torch.conj(x)).real
 
         return x[:, 0]
 
@@ -843,7 +1466,7 @@ class vit_models(nn.Module):
 
         if self.dropout_rate:
             x = F.dropout(x, p=float(self.dropout_rate), training=self.training)
-        x = self.head(x)
+        x = self.head(x.type(torch.float32))
 
         return x
 
@@ -912,9 +1535,11 @@ def init_t_xy(end_x: int, end_y: int):
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     ndim = x.ndim
     assert 0 <= 1 < ndim
-    if freqs_cis.shape == (x.shape[-2], x.shape[-1]):
+    if freqs_cis.shape == (x.shape[-2], x.shape[-1]): # if the freqs_cis shape is the last two dimensions of x
+        # then the shape we will convert it to is [1, ..., last two dimensions]
         shape = [d if i >= ndim - 2 else 1 for i, d in enumerate(x.shape)]
-    elif freqs_cis.shape == (x.shape[-3], x.shape[-2], x.shape[-1]):
+    elif freqs_cis.shape == (x.shape[-3], x.shape[-2], x.shape[-1]): # if the freqs_cis shape is the last three dimensions
+        # then we will convert it to [1, ..., last three dimensions]
         shape = [d if i >= ndim - 3 else 1 for i, d in enumerate(x.shape)]
 
     return freqs_cis.view(*shape)
@@ -954,9 +1579,37 @@ class RoPEAttention(Attention):
 
         mag = attn.abs()
 
-        attn = mag.softmax(-1).type(x.dtype) # * (attn / mag)
+        attn = mag.softmax(-1).type(x.dtype)  # * (attn / mag)
 
+        attn = self.attn_drop(attn)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+
+        return x
     
+class FreqRoPEAttention(Attention):
+    """Multi-head Attention block with relative position embeddings."""
+
+    def forward(self, x, freqs_cis):
+        B, N, C = x.shape
+        qkv = (
+            self.qkv(x)
+            .reshape(B, N, 3, self.num_heads, C // self.num_heads)
+            .permute(2, 0, 3, 1, 4)
+        )
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        q[:, :, 1:], k[:, :, 1:] = apply_rotary_emb(
+            q[:, :, 1:], k[:, :, 1:], freqs_cis=freqs_cis
+        )
+
+        attn = (q * self.scale).abs() @ k.transpose(-2, -1).abs()
+
+        # phase preserving softmax operation
+        attn = attn.softmax(-1).type(x.dtype)  # * (attn / mag)
+
         attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -970,7 +1623,7 @@ class complex_rope_Layer_scale_init_Block(Layer_scale_init_Block):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     # with slight modifications
     def __init__(self, *args, **kwargs):
-        kwargs["Attention_block"] = RoPEAttention
+        kwargs["Attention_block"] = FreqRoPEAttention
         super().__init__(*args, **kwargs)
 
     def forward(self, x, freqs_cis):
@@ -983,7 +1636,13 @@ class complex_rope_Layer_scale_init_Block(Layer_scale_init_Block):
 
 
 class complex_rope_vit_models(vit_models):
-    def __init__(self, complex_rope_theta=100.0, complex_rope_mixed=False, use_ape=False, **kwargs):
+    def __init__(
+        self,
+        complex_rope_theta=100.0,
+        complex_rope_mixed=False,
+        use_ape=False,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
 
         img_size = kwargs["img_size"] if "img_size" in kwargs else 224
@@ -1031,7 +1690,7 @@ class complex_rope_vit_models(vit_models):
             freqs_cis = self.compute_cis(
                 end_x=img_size // patch_size, end_y=img_size // patch_size
             )
-            self.freqs_cis = freqs_cis
+            self.freqscis = freqs_cis
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -1090,9 +1749,8 @@ class complex_rope_vit_models(vit_models):
             for i, blk in enumerate(self.blocks):
                 x = blk(x, freqs_cis=freqs_cis)
 
-
         x = self.norm(x)
-        x = self.concat(x)
+        x = (x * torch.conj(x)).real
 
         x = x[:, 0]
 
@@ -1389,7 +2047,7 @@ def complex_rope_mixed_ape_deit_large_patch16_LS(
 def complex_rope_mixed_ape_deit_small_patch4_LS(
     pretrained=False, img_size=224, pretrained_21k=False, **kwargs
 ):
-    model = complex_rope_vit_models(
+    model = vit_models(
         img_size=img_size,
         patch_size=4,
         embed_dim=192,
@@ -1397,9 +2055,9 @@ def complex_rope_mixed_ape_deit_small_patch4_LS(
         num_heads=6,
         mlp_ratio=4,
         qkv_bias=True,
-        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
-        block_layers=complex_rope_Layer_scale_init_Block,
-        Attention_block=RoPEAttention,
+        norm_layer=torch.nn.Identity, #partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=FreqAttention,
         complex_rope_theta=10.0,
         complex_rope_mixed=True,
         act_layer=CGELU,
@@ -1432,6 +2090,7 @@ def complex_rope_mixed_ape_deit_base_patch8_LS(
     )
     return model
 
+
 @register_model
 def complex_rope_mixed_deit_small_patch4_LS(
     pretrained=False, img_size=224, pretrained_21k=False, **kwargs
@@ -1439,9 +2098,53 @@ def complex_rope_mixed_deit_small_patch4_LS(
     model = complex_rope_vit_models(
         img_size=img_size,
         patch_size=4,
+        embed_dim=192,
+        depth=12,
+        num_heads=6,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=FreqAttention,
+        complex_rope_theta=10.0,
+        complex_rope_mixed=True,
+        act_layer=CGELU,
+        **kwargs,
+    )
+    model.default_cfg = _cfg()
+    return model
+
+
+@register_model
+def complex_Lfreakformer_small_patch1_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    """
+    model = vit_models(
+        img_size=img_size,
+        patch_size=1,
         embed_dim=384,
         depth=12,
         num_heads=6,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=torch.nn.Identity,  # partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=Attention,
+        act_layer=CGELU,
+        Patch_layer=LFreqEmbed,
+        **kwargs,
+    )
+
+    return model
+    """
+    model = complex_rope_vit_models(
+        img_size=img_size,
+        patch_size=4,
+        embed_dim=192,
+        depth=12,
+        num_heads=6,
+        act_layer=CGELU,
         mlp_ratio=4,
         qkv_bias=True,
         norm_layer=partial(ComplexLayerNorm, eps=1e-6),
@@ -1449,10 +2152,81 @@ def complex_rope_mixed_deit_small_patch4_LS(
         Attention_block=RoPEAttention,
         complex_rope_theta=10.0,
         complex_rope_mixed=True,
+        use_ape=True,
+        Patch_layer=LFreqEmbed,
         **kwargs,
     )
     model.default_cfg = _cfg()
     return model
+
+@register_model
+def complex_Lfreakformer_small_patch2_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = vit_models(
+        img_size=img_size,
+        patch_size=2,
+        embed_dim=384,
+        depth=12,
+        num_heads=6,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=torch.nn.Identity,  # partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=Attention,
+        act_layer=CGELU,
+        Patch_layer=LFreqEmbed,
+        **kwargs,
+    )
+
+    return model
+
+
+@register_model
+def complex_Lfreakformer_tiny_patch2_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = vit_models(
+        img_size=img_size,
+        patch_size=2,
+        embed_dim=192,
+        depth=12,
+        num_heads=12,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=torch.nn.Identity,  # partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=Attention,
+        act_layer=CGELU,
+        Patch_layer=LFreqEmbed,
+        **kwargs,
+    )
+
+    return model
+
+
+@register_model
+def complex_Lfreakformer_tiny_patch1_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = vit_models(
+        img_size=img_size,
+        patch_size=2,
+        embed_dim=192,
+        depth=12,
+        num_heads=6,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=torch.nn.Identity, #partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=FreqAttention,
+        act_layer=CGELU,
+        Patch_layer=LFreqEmbed,
+        **kwargs,
+    )
+
+    return model
+
 
 @register_model
 def complex_freakformer_small_patch1_LS(
@@ -1476,6 +2250,7 @@ def complex_freakformer_small_patch1_LS(
 
     return model
 
+
 @register_model
 def complex_freakformer_small_patch2_LS(
     pretrained=False, img_size=224, pretrained_21k=False, **kwargs
@@ -1490,13 +2265,106 @@ def complex_freakformer_small_patch2_LS(
         qkv_bias=True,
         norm_layer=partial(ComplexLayerNorm, eps=1e-6),
         block_layers=Block,
-        Attention_block=Attention,
+        Attention_block=FreqAttention,
         act_layer=CGELU,
         Patch_layer=FreqEmbed,
         **kwargs,
     )
 
     return model
+
+
+@register_model
+def complex_freakformer_tiny_patch1_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = vit_models(
+        img_size=img_size,
+        patch_size=1,
+        embed_dim=192,
+        depth=12,
+        num_heads=6,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=FreqAttention,
+        act_layer=CGELU,
+        Patch_layer=FreqEmbed,
+        **kwargs,
+    )
+
+    return model
+
+
+@register_model
+def complex_freakformer_tiny_patch2_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = vit_models(
+        img_size=img_size,
+        patch_size=2,
+        embed_dim=192,
+        depth=12,
+        num_heads=6,
+        mlp_ratio=4,
+        qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=FreqAttention,
+        act_layer=CGELU,
+        Patch_layer=FreqEmbed,
+        **kwargs,
+    )
+
+    return model
+
+
+@register_model
+def complex_directional_freakformer_tiny_patch4_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = vit_models(
+        img_size=img_size,
+        patch_size=4,
+        embed_dim=192,
+        depth=8,
+        num_heads=3,
+        mlp_ratio=1,
+        qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=Attention,
+        act_layer=CReLU,
+        Patch_layer=DirectionalFreqEmbed,
+        **kwargs,
+    )
+
+    return model
+
+
+@register_model
+def complex_freakformer_tiny_patch4_LS(
+    pretrained=False, img_size=224, pretrained_21k=False, **kwargs
+):
+    model = vit_models(
+        img_size=img_size,
+        patch_size=4,
+        embed_dim=192,
+        depth=4,
+        num_heads=1,
+        mlp_ratio=1,
+        qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        block_layers=Block,
+        Attention_block=Attention,
+        act_layer=CReLU,
+        Patch_layer=FreqEmbed,
+        **kwargs,
+    )
+
+    return model
+
 
 @register_model
 def complex_freakformer_small_patch4_LS(
@@ -1510,7 +2378,7 @@ def complex_freakformer_small_patch4_LS(
         num_heads=6,
         mlp_ratio=4,
         qkv_bias=True,
-        norm_layer=partial(ComplexLayerNorm, eps=1e-6),
+        norm_layer=torch.nn.Identity,  # partial(ComplexLayerNorm, eps=1e-6),
         block_layers=Block,
         Attention_block=Attention,
         act_layer=CGELU,
@@ -1519,6 +2387,7 @@ def complex_freakformer_small_patch4_LS(
     )
 
     return model
+
 
 @register_model
 def complex_freakformer_base_patch1_LS(
@@ -1542,6 +2411,7 @@ def complex_freakformer_base_patch1_LS(
 
     return model
 
+
 @register_model
 def complex_freakformer_base_patch2_LS(
     pretrained=False, img_size=224, pretrained_21k=False, **kwargs
@@ -1564,6 +2434,7 @@ def complex_freakformer_base_patch2_LS(
 
     return model
 
+
 @register_model
 def complex_freakformer_base_patch4_LS(
     pretrained=False, img_size=224, pretrained_21k=False, **kwargs
@@ -1583,5 +2454,15 @@ def complex_freakformer_base_patch4_LS(
         Patch_layer=FreqEmbed,
         **kwargs,
     )
+
+    return model
+
+
+@register_model
+def complex_deit_tiny_patch2_LS(pretrained=False, img_size=224, pretrained_21k = False,  **kwargs):
+    model = vit_models(
+        img_size = img_size, patch_size=2, embed_dim=192, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(ComplexLayerNorm, eps=1e-6),block_layers=Block, **kwargs)
+    model.default_cfg = _cfg()
 
     return model
