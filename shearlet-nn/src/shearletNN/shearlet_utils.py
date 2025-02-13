@@ -111,6 +111,65 @@ def batched_spatial_coefficients(X, shearlets, patch_size=32):
     return coeffs
 
 
+def batched_hartley_pooled(X, shearlets, patch_size=32):
+    fftlib = torch.fft
+
+    shearlets = shearlets.type(torch.complex128).to(torch.cuda.current_device())
+
+    X = X.to(torch.cuda.current_device())
+    # get data in frequency domain
+    Xfreq = fftlib.fftshift(
+        fftlib.fft2(fftlib.ifftshift(X, dim=(-2, -1)).type(torch.complex128)),
+        dim=(-2, -1),
+    )
+
+    Xfreq = (Xfreq.real - Xfreq.imag).unsqueeze(1)
+
+    if patch_size < X.shape[-1]:
+        Y = suppress_square(Xfreq, (Xfreq.shape[-1] - patch_size) // 2, crop=True)
+
+    # use torch so we can vectorize even this process
+    coeffs = fftlib.fftshift(
+        fftlib.ifft2(fftlib.ifftshift(Y, dim=(-2, -1))), dim=(-2, -1)
+    )
+
+    coeffs = coeffs.real - coeffs.imag
+    n = coeffs.shape[-1] * coeffs.shape[-2]
+    coeffs = coeffs / n
+
+    return coeffs
+
+
+def batched_fouier_pooled(X, shearlets, patch_size=32):
+    fftlib = torch.fft
+
+    shearlets = shearlets.type(torch.complex128).to(torch.cuda.current_device())
+    X = X.to(torch.cuda.current_device())
+    # get data in frequency domain
+    Xfreq = fftlib.fftshift(
+        fftlib.fft2(fftlib.ifftshift(X, dim=(-2, -1)).type(torch.complex128)),
+        dim=(-2, -1),
+    )
+    # print('frequency domain')
+    # visual.complexImageShow(Xfreq / Xfreq.max())
+    # plt.show()
+
+    # compute shearlet coefficients at each scale
+    # note that pointwise multiplication in the fourier domain equals
+    # convolution in the time-domain
+    Y = Xfreq.unsqueeze(1)
+
+    if patch_size < X.shape[-1]:
+        Y = suppress_square(Y, (Y.shape[-1] - patch_size) // 2, crop=True)
+
+    # use torch so we can vectorize even this process
+    # coeffs = fftlib.fftshift(
+    #     fftlib.ifft2(fftlib.ifftshift(Y, dim=(-2, -1))), dim=(-2, -1)
+    # )
+
+    return Y
+
+
 def frequency_coefficients(X, shearlets, patch_size=32):
     fftlib = torch.fft
     coeffs = np.zeros(shearlets.shape, dtype=complex)
@@ -352,6 +411,30 @@ def hartley_shearlet_transform(img, shearlets, patch_size=32):
         ],
         1,
     ).type(torch.float32)
+    return img
+
+
+def hartley_pooling_transform(img, shearlets, patch_size=32):
+    img = torch.cat(
+        [
+            batched_hartley_pooled(img[:, 0], shearlets, patch_size),
+            batched_hartley_pooled(img[:, 1], shearlets, patch_size),
+            batched_hartley_pooled(img[:, 2], shearlets, patch_size),
+        ],
+        1,
+    ).type(torch.float32)
+    return img
+
+
+def fourier_pooling_transform(img, shearlets, patch_size=32):
+    img = torch.cat(
+        [
+            batched_fouier_pooled(img[:, 0], shearlets, patch_size),
+            batched_fouier_pooled(img[:, 1], shearlets, patch_size),
+            batched_fouier_pooled(img[:, 2], shearlets, patch_size),
+        ],
+        1,
+    ).type(torch.complex64)
     return img
 
 

@@ -15,6 +15,8 @@ from timm.models.vision_transformer import Mlp, PatchEmbed , _cfg
 from timm.layers import DropPath, to_2tuple, trunc_normal_
 from timm.models.registry import register_model
 
+from .layers import SinGELU
+
 
 class Attention(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
@@ -52,8 +54,11 @@ class Block(nn.Module):
                  ,init_values=1e-4):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = Attention_block(
-            dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
+        if Attention_block == torch.nn.MultiheadAttention:
+            self.attn = Attention_block(dim, num_heads, drop, bias=qkv_bias)
+        else:
+            self.attn = Attention_block(
+                dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -69,12 +74,15 @@ class Layer_scale_init_Block(nn.Module):
     # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
     # with slight modifications
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm,Attention_block = Attention,Mlp_block=Mlp
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm,Attention_block = torch.nn.MultiheadAttention,Mlp_block=Mlp
                  ,init_values=1e-4):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = Attention_block(
-            dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
+        if Attention_block == torch.nn.MultiheadAttention:
+            self.attn = Attention_block(dim, num_heads, drop, bias=qkv_bias)
+        else:
+            self.attn = Attention_block(
+                dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -84,7 +92,11 @@ class Layer_scale_init_Block(nn.Module):
         self.gamma_2 = nn.Parameter(init_values * torch.ones((dim)),requires_grad=True)
 
     def forward(self, x):
-        x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x)))
+        if self.attn == torch.nn.MultiheadAttention:
+            qkv = self.norm1(x)
+            x = x + self.drop_path(self.gamma_1 * self.attn(qkv, qkv, qkv, need_weights=False)[0])
+        else:
+            x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x)))
         x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
         return x
 
@@ -184,7 +196,8 @@ class vit_models(nn.Module):
                  drop_path_rate=0., norm_layer=nn.LayerNorm, global_pool=None,
                  block_layers = Block,
                  Patch_layer=PatchEmbed,act_layer=nn.GELU,
-                 Attention_block = Attention, Mlp_block=Mlp,
+                 Attention_block = Attention, #torch.nn.MultiheadAttention, 
+                 Mlp_block=Mlp,
                 dpr_constant=True,init_scale=1e-4,
                 mlp_ratio_clstk = 4.0,**kwargs):
         super().__init__()
@@ -275,6 +288,22 @@ class vit_models(nn.Module):
 # DeiT III: Revenge of the ViT (https://arxiv.org/abs/2204.07118)
 
 @register_model
+def deit_tiny_patch1_LS(pretrained=False, img_size=224, pretrained_21k = False,   **kwargs):
+    model = vit_models(
+        img_size = img_size, patch_size=1, embed_dim=192, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6),block_layers=Layer_scale_init_Block, **kwargs)
+    
+    return model
+
+@register_model
+def deit_tiny_patch2_LS(pretrained=False, img_size=224, pretrained_21k = False,   **kwargs):
+    model = vit_models(
+        img_size = img_size, patch_size=2, embed_dim=192, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6),block_layers=Layer_scale_init_Block, **kwargs)
+    
+    return model
+
+@register_model
 def deit_tiny_patch16_LS(pretrained=False, img_size=224, pretrained_21k = False,   **kwargs):
     model = vit_models(
         img_size = img_size, patch_size=16, embed_dim=192, depth=12, num_heads=3, mlp_ratio=4, qkv_bias=True,
@@ -287,28 +316,6 @@ def deit_tiny_patch16_LS(pretrained=False, img_size=224, pretrained_21k = False,
 def deit_small_patch16_LS(pretrained=False, img_size=224, pretrained_21k = False,  **kwargs):
     model = vit_models(
         img_size = img_size, patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6),block_layers=Layer_scale_init_Block, **kwargs)
-    model.default_cfg = _cfg()
-    if pretrained:
-        name = 'https://dl.fbaipublicfiles.com/deit/deit_3_small_'+str(img_size)+'_'
-        if pretrained_21k:
-            name+='21k.pth'
-        else:
-            name+='1k.pth'
-            
-        checkpoint = torch.hub.load_state_dict_from_url(
-            url=name,
-            map_location="cpu", check_hash=True
-        )
-        model.load_state_dict(checkpoint["model"])
-
-    return model
-
-
-@register_model
-def deit_tiny_patch2_LS(pretrained=False, img_size=224, pretrained_21k = False,  **kwargs):
-    model = vit_models(
-        img_size = img_size, patch_size=2, embed_dim=192, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),block_layers=Layer_scale_init_Block, **kwargs)
     model.default_cfg = _cfg()
     if pretrained:
@@ -589,11 +596,17 @@ def apply_rotary_emb(
     xk: torch.Tensor,
     freqs_cis: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+    xq = xq.float().reshape(*xq.shape[:-1], -1, 2)
+    xk = xk.float().reshape(*xk.shape[:-1], -1, 2)
+
+    xq_ = torch.complex(xq[..., 0], xq[..., 1])
+    xk_ = torch.complex(xk[..., 0], xk[..., 1])
+    
     freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
-    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
-    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+
+    xq_out = torch.stack(((xq_ * freqs_cis).real, (xq_ * freqs_cis).imag), -1).flatten(3)
+    xk_out = torch.stack(((xk_ * freqs_cis).real, (xk_ * freqs_cis).imag), -1).flatten(3)
+
     return xq_out.type_as(xq).to(xq.device), xk_out.type_as(xk).to(xk.device)
 
 
@@ -823,4 +836,14 @@ def rope_mixed_ape_deit_large_patch16_LS(pretrained=False, img_size=224, pretrai
         img_size = img_size, patch_size=16, embed_dim=1024, depth=24, num_heads=16, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),block_layers=RoPE_Layer_scale_init_Block, Attention_block=RoPEAttention,
         rope_theta=10.0, rope_mixed=True, use_ape=True, **kwargs)
+    return model
+
+# my models
+@register_model
+def rope_mixed_ape_deit_small_patch1_LS(pretrained=False, img_size=224, pretrained_21k = False,  **kwargs):
+    model = rope_vit_models(
+        img_size = img_size, patch_size=1, embed_dim=192, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), block_layers=RoPE_Layer_scale_init_Block, Attention_block=RoPEAttention,
+        rope_theta=10.0, rope_mixed=True, use_ape=True, **kwargs)
+    model.default_cfg = _cfg()
     return model

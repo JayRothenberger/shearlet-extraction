@@ -489,3 +489,14 @@ class CGELU(torch.nn.Module):
         out = torch.complex(self.rGELU(x.real), self.iGELU(x.imag))
         assert not out.isnan().any(), 'nan in gelu'
         return out
+    
+
+class SinGELU(torch.nn.Module):
+
+    def __init__(self, **kwargs):
+        super(SinGELU, self).__init__()
+        self.GELU = torch.nn.GELU(**kwargs)
+
+    def forward(self, x):
+        # return self.GELU(x)
+        return torch.cat((torch.sin(x[..., :x.shape[-1] // 2]), self.GELU(x[..., x.shape[-1] // 2:])), -1)
