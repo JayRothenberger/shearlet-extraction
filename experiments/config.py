@@ -1,44 +1,7 @@
-from shearletNN.shearlets import getcomplexshearlets2D
-from shearletNN.shearlet_utils import (
-    frequency_shearlet_transform,
-    shifted_frequency_shearlet_transform,
-    spatial_shearlet_transform,
-    ShearletTransformLoader,
-)
-# from shearletNN.complex_resnet import complex_resnet18, complex_resnet34, complex_resnet50
-# from shearletNN.layers import CGELU
-
-import torch
-import numpy as np
-import torch.distributed as dist
 import torchvision
-from torchvision.transforms import v2
-from torchvision import transforms
-from tqdm import tqdm
-import os
-import argparse
-import random
-import gc
-import wandb
 import ssl
-import shutil
-import time
-import glob
 
-from shearletNN.complex_deit import (
-    complex_freakformer_small_patch1_LS,
-    complex_freakformer_small_patch2_LS,
-    complex_freakformer_small_patch4_LS,
-    complex_freakformer_base_patch1_LS,
-    complex_freakformer_base_patch2_LS,
-    complex_freakformer_base_patch4_LS,
-    complex_rope_mixed_ape_deit_base_patch16_LS,
-    complex_rope_mixed_ape_deit_small_patch16_LS,
-    complex_rope_mixed_deit_base_patch16_LS,
-    complex_rope_mixed_deit_small_patch16_LS,
-)
-
-from shearletNN.layers import CGELU
+from shearletNN.deit import vit_models
 
 from shearletNN.complex_resnet import (
     complex_resnet18,
@@ -47,21 +10,10 @@ from shearletNN.complex_resnet import (
     complex_resnet101,
 )
 
-from dahps import DistributedAsynchronousRandomSearch, sync_parameters
-
 ### model registry utilities a map from string names to model classes
 
 model_dir = {
-    "complex_freakformer_small_patch1_LS": complex_freakformer_small_patch1_LS,
-    "complex_freakformer_small_patch2_LS": complex_freakformer_small_patch2_LS,
-    "complex_freakformer_small_patch4_LS": complex_freakformer_small_patch4_LS,
-    "complex_freakformer_base_patch1_LS": complex_freakformer_base_patch1_LS,
-    "complex_freakformer_base_patch2_LS": complex_freakformer_base_patch2_LS,
-    "complex_freakformer_base_patch4_LS": complex_freakformer_base_patch4_LS,
-    "complex_rope_mixed_ape_deit_base_patch16_LS": complex_rope_mixed_ape_deit_base_patch16_LS,
-    "complex_rope_mixed_ape_deit_small_patch16_LS": complex_rope_mixed_ape_deit_small_patch16_LS,
-    "complex_rope_mixed_deit_base_patch16_LS": complex_rope_mixed_deit_base_patch16_LS,
-    "complex_rope_mixed_deit_small_patch16_LS": complex_rope_mixed_deit_small_patch16_LS,
+    "deit": vit_models,
     "complex_resnet18": complex_resnet18,
     "complex_resnet34": complex_resnet34,
     "complex_resnet50": complex_resnet50,
@@ -79,20 +31,155 @@ data_dir = {
     "caltech256": torchvision.datasets.Caltech256,
     "food101": torchvision.datasets.Food101,
     "inat2021": torchvision.datasets.INaturalist,
+    "cifar10": torchvision.datasets.CIFAR10,
+    "cifar100": torchvision.datasets.CIFAR100,
 }
 
 spec_dir = {
-    "caltech101": {"train": None, "test": None, "classes": 101, "download_path": "/ourdisk/hpc/ai2es/datasets/caltech101"},
-    "caltech256": {"train": None, "test": None, "classes": 257, "download_path": "/ourdisk/hpc/ai2es/datasets/caltech256"},
+    "caltech101": {
+        "train": None,
+        "test": None,
+        "classes": 101,
+        "download_path": "/ourdisk/hpc/ai2es/datasets/caltech101",
+    },
+    "caltech256": {
+        "train": None,
+        "test": None,
+        "classes": 257,
+        "download_path": "/ourdisk/hpc/ai2es/datasets/caltech256",
+    },
     "food101": {
-        "train": {"split": "train"}, 
-        "test": {"split": "test"}, 
-        "classes": 101, 
-        "download_path": "/ourdisk/hpc/ai2es/datasets/Food101"},
+        "train": {"split": "train"},
+        "test": {"split": "test"},
+        "classes": 101,
+        "download_path": "/ourdisk/hpc/ai2es/datasets/Food101",
+    },
     "inat2021": {
         "train": {"version": "2021_train"},
         "test": {"version": "2021_train"},
         "classes": 10_000,
         "download_path": "/ourdisk/hpc/ai2es/datasets/iNat2021",
     },
+    "cifar10": {
+        "train": {"train": True},
+        "test": {"train": False},
+        "classes": 10,
+        "download_path": "/ourdisk/hpc/ai2es/datasets/CIFAR100",
+    },
+    "cifar100": {
+        "train": {"train": True},
+        "test": {"train": False},
+        "classes": 100,
+        "download_path": "/ourdisk/hpc/ai2es/datasets/CIFAR10",
+    },
 }
+
+### Experimental Configuration Structure ###
+
+# handles the low resolution datasets
+low_res_config = {
+    "key": "image_size",
+    "values": [64, 128],
+    "default": {"key": "crop_size", "values": [16, 32, 64], "default": None},
+}
+# handles the high resolution datasets
+high_res_config = {
+    "key": "image_size",
+    "values": [128, 256],
+    "default": {"key": "crop_size", "values": [16, 32, 64, 128], "default": None},
+}
+
+dataset_config = (
+    {
+        "key": "dataset",
+        "values": [
+            "caltech101",
+            "caltech256",
+            "food101",
+            "inat2021",
+            "cifar10",
+            "cifar100",
+        ],
+        "default": high_res_config,
+        "cifar10": low_res_config,
+        "cifar100": low_res_config,
+    },
+)
+
+optimization_config = {
+    "key": "learning_rate",
+    "values": [1e-3, 1e-4],
+    "default": {
+        "key": "batch_size",
+        "values": [64, 128, 256, 512],
+        "default": dataset_config,
+    },
+}
+
+deit_config = {
+    "key": "activation",
+    "values": [],
+    "default": {
+        "key": "patch_size",
+        "values": [1, 2, 4, 16],
+        "default": {
+            "key": "num_heads",
+            "values": [3, 6, 12],
+            "default": {
+                "key": "embed_dim",
+                "values": [192, 384, 768],
+                "default": {
+                    "key": "conv_first",
+                    "values": [True, False],
+                    "default": optimization_config,
+                },
+            },
+        },
+    },
+}
+
+resnet_config = {
+    "key": "model",
+    "values": [
+        "complex_resnet18",
+        "complex_resnet34",
+        "complex_resnet50",
+        "complex_resnet101",
+    ],
+    "default": optimization_config,
+}
+
+model_config = {
+    "key": "model_type",
+    "values": ["deit", "resnet"],
+    "default": resnet_config,
+    "deit": deit_config,
+}
+
+preprocessing_config = {
+    "key": "normalize",
+    "values": [True, False],
+    "default": {
+        "key": "magphase",
+        "values": [True, False],
+        "default": {"key": "symlog", "values": [True, False], "default": model_config},
+    },
+}
+
+experiment_config = {
+    "root": {
+        "key": "experiment_type",
+        "values": ["shearlet", "fourier", "baseline"],
+        "default": model_config,
+        "shearlet": {
+            "key": "n_shearlets",
+            "value": [1, 3, 10],
+            "default": preprocessing_config,
+        },
+        "fourier": preprocessing_config,
+    },
+    "check_unique": True,
+    "repetitions": 1,
+}
+
+######
