@@ -538,7 +538,7 @@ def _resnet(
     complex_to_real = {ComplexBasicBlock: BasicBlock, ComplexBottleneck: Bottleneck}
     real_to_complex = {BasicBlock: ComplexBasicBlock, Bottleneck: ComplexBottleneck}
 
-    if kwargs.get('complex') == True:
+    if kwargs.get('complex'):
         model = ComplexResNet(block, layers, **kwargs)
     else:
         model = ResNet(complex_to_real[block], layers, **kwargs)

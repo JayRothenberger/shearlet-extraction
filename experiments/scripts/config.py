@@ -10,6 +10,19 @@ from shearletNN.complex_resnet import (
     complex_resnet101,
 )
 
+from shearletNN.shearlet_utils import (
+    fourier_pooling_transform,
+    image_fourier_pooling_transform,
+    shearlet_pooling_transform,
+)
+### pooling function map from string names to pooling function classes
+
+pooling_dir = {
+    "fourier": fourier_pooling_transform,
+    "baseline": image_fourier_pooling_transform,
+    "shearlet": shearlet_pooling_transform,
+}
+
 ### model registry utilities a map from string names to model classes
 
 model_dir = {

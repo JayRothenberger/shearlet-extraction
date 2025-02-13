@@ -4,15 +4,23 @@ import gc
 from tqdm import tqdm
 import torch.distributed as dist
 import os
-from config import data_dir, spec_dir, model_dir
+from config import data_dir, spec_dir, model_dir, pooling_dir
 from torchvision import transforms
 from torchvision.transforms import v2
-import torchvision
 from itertools import cycle
 
-## single-gpu local versions of model training functions
+from shearletNN.shearlet_utils import ShearletTransformLoader
+from shearletNN.shearlets import getcomplexshearlets2D
+from shearletNN.shearlet_utils import (
+    fourier_pooling_transform,
+    image_fourier_pooling_transform,
+    shearlet_pooling_transform,
+)
+
+import matplotlib.pyplot as plt
 
 
+# function that trains the model
 def model_run(
     model,
     optimizer,
@@ -23,7 +31,7 @@ def model_run(
     val_loader,
     patience,
     loss_fn,
-    sampler=None
+    sampler=None,
 ):
     best_val_acc = 0
     best_state = None
@@ -92,7 +100,7 @@ def model_run(
     return best_state, best_val_acc
 
 
-# epoch, network, test_loader, loss_fn, optimizer
+## single-gpu local versions of model training functions
 def train(model, loader, loss_fn, optimizer, accumulate=1, **kwargs):
     model.train()
 
@@ -323,7 +331,6 @@ class RepeatLoader:
                 yield b
             else:
                 raise StopIteration
-            
 
 
 ### data processing utility functions (move to the shearlets package probably)
@@ -395,46 +402,6 @@ def loader_mean_cov(loader):
             )
 
     return mean, cov
-
-
-class Normalizer:
-    def __init__(self, mean, cov, eps=1e-6):
-        self.mean = mean
-        self.cov = cov
-        self.epsilon_matrix = torch.eye(1) * eps
-
-        # Inv and sqrtm is done over 2 inner most dimension [..., M, M] so it should be [..., 2, 2] for us.
-        # torch has no matrix square root, so we have
-        L, Q = torch.linalg.eigh(
-            torch.linalg.inv(
-                (self.cov + self.epsilon_matrix.unsqueeze(0).to(self.cov.device)).to(
-                    torch.float64
-                )
-            )
-        )  # low precision dtypes not supported
-        # eigenvalues of positive semi-definite matrices are always real (and non-negative)
-        diag = torch.diag_embed(L ** (0.5))
-        self.inv_sqrt_var = Q @ diag @ Q.mH  # var^(-1/2), (C, 2, 2)
-
-    def __call__(self, inputs):
-        # Separate real and imag so I go from shape [...] to [..., 2]
-        inputs = inputs.unsqueeze(-1)
-
-        zero_mean = inputs - self.mean
-        # (C, 2, 2) @ (B, H, W, C, 2, 1) -> (B, H, W, C, 2, 1)
-        inputs_hat = torch.matmul(
-            self.inv_sqrt_var.to(inputs.dtype),
-            zero_mean.permute(0, 2, 3, 1, 4).unsqueeze(-1),
-        )
-        # Then I squeeze to remove the last shape so I go from [..., 2, 1] to [..., 2].
-        # Use reshape and not squeeze in case I have 1 channel for example.
-        squeeze_inputs_hat = torch.reshape(
-            inputs_hat, shape=inputs_hat.shape[:-1]
-        ).permute(0, 3, 1, 2, 4)
-        # Get complex data
-        complex_inputs_hat = squeeze_inputs_hat[..., 0]
-
-        return complex_inputs_hat
 
 
 ### model modification utility functions
@@ -542,7 +509,7 @@ def select_dataset(args):
         )
         ds_val = IndexSubsetDataset(ds_val, list(range(len(ds_val)))[0::5])
 
-    opt_steps = (len(ds_train) // (args.batch_size * int(os.environ['WORLD_SIZE'])))
+    opt_steps = len(ds_train) // (args.batch_size * int(os.environ["WORLD_SIZE"]))
 
     ds_train = RepeatLoader(ds_train, 512)
 
@@ -575,12 +542,14 @@ def select_model(args):
             "in_chans": deit_in_chans,
         }
 
-        torch.set_float32_matmul_precision('high')
+        torch.set_float32_matmul_precision("high")
 
         model = model_fn(model_kwargs)
 
         if args.conv_first:
-            model = torch.nn.Sequential(torch.nn.Conv2d(in_chans, deit_in_chans, 3, 1, 'same'), model)
+            model = torch.nn.Sequential(
+                torch.nn.Conv2d(in_chans, deit_in_chans, 3, 1, "same"), model
+            )
     else:
         raise NotImplementedError(f"unrecognized model type: {args.model_type}")
 
@@ -588,3 +557,167 @@ def select_model(args):
         model = spectral_normalize(model)
     else:
         model = torch.compile(model)
+
+
+class PoolingTransform:
+    def __init__(self, fn, crop_size, norm, magphase=False, symlog=False, shearlets=None):
+        self.fn = fn
+        self.crop_size = crop_size
+        self.norm = norm
+        self.magphase = magphase
+        self.symlog = symlog
+        self.shearlets = shearlets.to(torch.cuda.current_device())
+
+    def __call__(self, batch):
+        img = self.fn(batch.to(torch.cuda.current_device()), self.shearlets, self.crop_size)
+
+        if self.magphase:
+            if self.symlog:
+                return self.norm(torch.cat(to_symlog_magphase(img), 1))
+            return self.norm(torch.cat(to_magphase(img), 1))
+        else:
+            if self.symlog:
+                return self.norm(torch.cat(to_symlog_real_imag(img), 1))
+            return self.norm(torch.cat(to_real_imag(img), 1))
+
+
+def sync_picklable_object(rank, object):
+    pass # TODO: pull some of the code from dahps to do this
+
+
+def to_magphase(img):
+    phase = torch.angle(img) / torch.math.pi
+    mag = torch.sqrt((img.real**2) + (img.imag**2))
+
+    return mag, phase
+
+def to_symlog_magphase(img):
+    phase = torch.angle(img) / torch.math.pi
+    mag = torch.sqrt((img.real**2) + (img.imag**2))
+
+    return mag, phase
+
+def to_real_imag(img):
+    return img.real, img.imag
+
+def to_symlog_real_imag(img):
+    return torch.symlog(img.real), torch.symlog(img.imag)
+
+def loader_min_max(train_loader):
+    a_max = None
+    a_min = None
+
+    for x, y in train_loader:
+        # this should be the max elementwise and pixelwise as different ones are likely to have different ranges
+        a_max = torch.maximum(
+            torch.max(x, dim=0)[0],
+            a_max if a_max is not None else torch.max(x, dim=0)[0],
+        )
+        a_min = torch.minimum(
+            torch.min(x, dim=0)[0],
+            a_min if a_min is not None else torch.min(x, dim=0)[0],
+        )
+
+    return a_max.unsqueeze(0), a_min.unsqueeze(0)
+
+
+class MinMaxNormalizer:
+    def __init__(self, min, max):
+        self.min = min.to(torch.cuda.current_device())
+        self.max = max.to(torch.cuda.current_device())
+        self.diff = (self.max - self.min)
+
+    def __call__(self, batch):
+        img = self.fn(batch.to(torch.cuda.current_device()), self.shearlets, self.crop_size)
+
+        img = (2 * (img - self.min) / self.diff) - 1
+
+        return img
+
+
+class Normalizer:
+    def __init__(self, mean, cov, eps=1e-6):
+        self.mean = mean
+        self.cov = cov
+        self.epsilon_matrix = torch.eye(1) * eps
+
+        # Inv and sqrtm is done over 2 inner most dimension [..., M, M] so it should be [..., 2, 2] for us.
+        # torch has no matrix square root, so we have
+        L, Q = torch.linalg.eigh(
+            torch.linalg.inv(
+                (self.cov + self.epsilon_matrix.unsqueeze(0).to(self.cov.device)).to(
+                    torch.float64
+                )
+            )
+        )  # low precision dtypes not supported
+        # eigenvalues of positive semi-definite matrices are always real (and non-negative)
+        diag = torch.diag_embed(L ** (0.5))
+        self.inv_sqrt_var = Q @ diag @ Q.mH  # var^(-1/2), (C, 2, 2)
+
+    def __call__(self, inputs):
+        # Separate real and imag so I go from shape [...] to [..., 2]
+        inputs = inputs.unsqueeze(-1)
+
+        zero_mean = inputs - self.mean
+        # (C, 2, 2) @ (B, H, W, C, 2, 1) -> (B, H, W, C, 2, 1)
+        inputs_hat = torch.matmul(
+            self.inv_sqrt_var.to(inputs.dtype),
+            zero_mean.permute(0, 2, 3, 1, 4).unsqueeze(-1),
+        )
+        # Then I squeeze to remove the last shape so I go from [..., 2, 1] to [..., 2].
+        # Use reshape and not squeeze in case I have 1 channel for example.
+        squeeze_inputs_hat = torch.reshape(
+            inputs_hat, shape=inputs_hat.shape[:-1]
+        ).permute(0, 3, 1, 2, 4)
+        # Get complex data
+        complex_inputs_hat = squeeze_inputs_hat[..., 0]
+
+        return complex_inputs_hat
+
+# returns the appropriate type of input transform for the model
+# for runs with multiple ranks we will need to synchronize the transform across the ranks
+# functions that are not defined on the top level of a file are not picklable
+def select_transform(args, ds_train):
+    rows, cols = args.image_size, args.image_size
+
+    shearlets, shearletIdxs, RMS, dualFrameWeights = getcomplexshearlets2D(
+        rows,
+        cols,
+        1,  # scales per octave
+        3,  # shear level (something like O(log of directions))
+        1,  # octaves
+        0.5,  # alpha
+        wavelet_eff_support=args.image_size,
+        gaussian_eff_support=args.image_size,
+    )
+    shearlets = torch.tensor(shearlets).permute(2, 0, 1).type(torch.complex128).to(0)
+    shearlets = shearlets[:args.n_shearlets]
+
+    train_loader = torch.utils.data.DataLoader(
+        ds_train, batch_size=args.batch_size, shuffle=True, num_workers=0
+    )
+
+    def pooling_transform(img):
+        img = pooling_dir[args.experiment_type](img.to(0), shearlets.to(0), args.crop_size)
+
+        if args.magphase:
+            if args.symlog:
+                return torch.cat(to_symlog_magphase(img), 1)
+            return torch.cat(to_magphase(img), 1)
+        else:
+            if args.symlog:
+                return torch.cat(to_symlog_real_imag(img), 1)
+            return torch.cat(to_real_imag(img), 1)
+
+    train_loader = ShearletTransformLoader(train_loader, pooling_transform)
+
+    if args.channel_norm:
+        mean, cov = loader_mean_cov(tqdm(train_loader))
+        norm = Normalizer(mean, cov)
+    elif args.pixel_norm:
+        a_max, a_min = loader_min_max(tqdm(train_loader))
+        norm = MinMaxNormalizer(a_min, a_max)
+    else:
+        norm = torch.nn.Identity()
+
+    return PoolingTransform(pooling_dir[args.experiment_type], args.crop_size, norm, args.magphase, args.symlog, shearlets)

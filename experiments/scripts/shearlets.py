@@ -7,29 +7,10 @@ from shearletNN.shearlet_utils import (
     shifted_spatial_shearlet_transform,
     hartley_shearlet_transform,
 )
-from shearletNN.complex_resnet import (
-    complex_resnet18,
-    complex_resnet34,
-    complex_resnet50,
-)
-
-from shearletNN.complex_deit import (
-    vit_models,
-    LPatchEmbed,
-    Attention,
-    Block,
-    ComplexLayerNorm,
-    complex_Lfreakformer_small_patch1_LS,
-)
 
 # do we need a switch for this?
 from shearletNN.shearlets import getcomplexshearlets2D
-from shearletNN.shearlet_utils import (
-    frequency_shearlet_transform,
-    shifted_frequency_shearlet_transform,
-    spatial_shearlet_transform,
-    ShearletTransformLoader,
-)
+
 
 from utils import setup, cleanup
 from dahps import DistributedAsynchronousRandomSearch as DARS
@@ -49,12 +30,8 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import argparse
 
-# TODO: replace with functions from the args
-patch_size = 32
-image_size = 64
-batch_size_train = 128
-
-rows, cols = image_size, image_size
+from scripts.utils import select_dataset, select_model, select_transform, model_run
+from scripts.loggers import wandb_init
 
 
 def training_process(args, rank, world_size):
@@ -65,59 +42,15 @@ def training_process(args, rank, world_size):
     sampler_train = torch.utils.data.distributed.DistributedSampler(ds_train, int(os.environ['WORLD_SIZE']), int(os.environ['RANK']), shuffle=True)
 
     train_loader = torch.utils.data.DataLoader(
-        ds_train, batch_size=batch_size_train, shuffle=False, num_workers=0, sampler=sampler_train
+        ds_train, batch_size=args.batch_size, shuffle=False, num_workers=0, sampler=sampler_train
     )
 
-    shearlets, shearletIdxs, RMS, dualFrameWeights = getcomplexshearlets2D(
-        rows,
-        cols,
-        1,  # scales per octave
-        3,  # shear level (something like O(log of directions))
-        1,  # octaves
-        0.5,  # alpha
-        wavelet_eff_support=image_size,
-        gaussian_eff_support=image_size,
-    )
-
-    shearlets = torch.tensor(shearlets).permute(2, 0, 1).type(torch.complex64).to(0)
-
-    shearlets = shearlets[:args.n_shearlets]
-
-
-    def shearlet_transform(img):
-        return symsqrt(hartley_shearlet_transform(img.to(0), shearlets.to(0), patch_size))
-
-
-    train_loader = ShearletTransformLoader(train_loader, shearlet_transform)
-
-
-    mean, cov = loader_mean_cov(tqdm(train_loader))
-
-    norm = Normalizer(mean, cov)
-
-
-    train_loader = torch.utils.data.DataLoader(
-        ds_train, batch_size=512, shuffle=False, num_workers=0, drop_last=True
-    )
-
-    for x, y in tqdm(train_loader):
-        plt.imshow(x[0].sum(0).real.cpu().numpy())
-        plt.show()
-        break
-
-    shearlets = shearlets[:]
-
-
-    def shearlet_transform(img):
-        return norm(
-            symsqrt(hartley_shearlet_transform(img.to(0), shearlets.to(0), patch_size))
-        )
-
+    shearlet_transform = select_transform(args, ds_train)
 
     train_loader = ShearletTransformLoader(train_loader, shearlet_transform)
 
     val_loader = torch.utils.data.DataLoader(
-        ds_val, batch_size=batch_size_train, shuffle=False
+        ds_val, batch_size=args.batch_size, shuffle=False
     )
 
     val_loader = ShearletTransformLoader(val_loader, shearlet_transform)
@@ -127,8 +60,8 @@ def training_process(args, rank, world_size):
         assert list(x.shape) == [
             512,
             shearlets.shape[0] * 3,
-            patch_size,
-            patch_size,
+            args.crop_size,
+            args.crop_size,
         ], x.shape
         assert x.dtype == torch.float32, x.dtype
         print(x.real.mean((0, 2, 3)))
@@ -150,19 +83,12 @@ def training_process(args, rank, world_size):
         plt.show()
 
     train_loader = torch.utils.data.DataLoader(
-        ds_train, batch_size=batch_size_train, shuffle=True, num_workers=0
+        ds_train, batch_size=args.batch_size, shuffle=True, num_workers=0
     )
 
     val_loader = torch.utils.data.DataLoader(
-        ds_val, batch_size=batch_size_train, shuffle=False
+        ds_val, batch_size=args.batch_size, shuffle=False
     )
-
-    # TODO: change this to the fourier coordinates times the shearlets
-    def shearlet_transform(img):
-        return hartley_shearlet_transform(img.to(0), shearlets.to(0), patch_size)
-
-    train_loader = ShearletTransformLoader(train_loader, shearlet_transform)
-    val_loader = ShearletTransformLoader(val_loader, shearlet_transform)
 
     # TODO: add to parameter spectral normalization (doesn't work with compile)
     model = select_model(args)
