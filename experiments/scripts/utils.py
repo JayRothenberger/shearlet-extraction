@@ -554,6 +554,9 @@ class PoolingTransform:
             batch.to(torch.cuda.current_device()), self.shearlets, self.crop_size
         )
 
+        if not torch.is_complex(img):
+            return img
+
         if self.magphase:
             if self.symlog:
                 return self.norm(torch.cat(to_symlog_magphase(img), 1))
@@ -683,9 +686,6 @@ def get_shearlets(args):
 def select_transform(args, ds_train):
     shearlets = get_shearlets(args) if vars(args).get('n_shearlets') is not None else None
 
-    if args.experiment_type == "baseline":
-        return torch.nn.Identity()
-
     train_loader = torch.utils.data.DataLoader(
         ds_train, batch_size=args.batch_size, shuffle=True, num_workers=0
     )
@@ -696,6 +696,9 @@ def select_transform(args, ds_train):
             shearlets.to(torch.cuda.current_device()) if shearlets is not None else None,
             args.crop_size,
         )
+
+        if not torch.is_complex(img):
+            return img
         
         if vars(args).get('magphase'):
             if vars(args).get('symlog'):
