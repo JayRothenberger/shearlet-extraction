@@ -53,7 +53,7 @@ def training_process(args, rank, world_size):
 
     print("training model...")
 
-    model, acc = model_run(
+    state, acc = model_run(
         model,
         optimizer,
         scheduler,
@@ -65,6 +65,8 @@ def training_process(args, rank, world_size):
         torch.nn.CrossEntropyLoss(),
         sampler_train,
     )
+
+    return state, acc
 
 
 def create_parser():
