@@ -9,8 +9,21 @@ import torch
 import os
 import argparse
 
-from scripts.utils import select_dataset, select_model, select_transform, model_run, RepeatLoader
-from scripts.loggers import wandb_init, log_data_histograms, log_flops_params, log_latency, log_model_throughput
+from scripts.utils import (
+    select_dataset,
+    select_model,
+    select_transform,
+    model_run,
+    RepeatLoader,
+    move_data_to_lscratch,
+)
+from scripts.loggers import (
+    wandb_init,
+    log_data_histograms,
+    log_flops_params,
+    log_latency,
+    log_model_throughput,
+)
 
 
 def training_process(args, rank, world_size):
@@ -50,6 +63,8 @@ def training_process(args, rank, world_size):
     # log_flops_params(args, model, train_loader)
     log_latency(args, model, train_loader)
     log_model_throughput(model, train_loader)
+
+    move_data_to_lscratch(rank, args)
 
     print("training model...")
 

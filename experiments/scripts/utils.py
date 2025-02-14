@@ -11,6 +11,7 @@ from itertools import cycle
 import glob
 import time
 from pathlib import Path
+from argparse import Namespace
 
 from shearletNN.shearlet_utils import ShearletTransformLoader
 from shearletNN.shearlets import getcomplexshearlets2D
@@ -304,7 +305,8 @@ def move_data_to_lscratch(rank, args):
         print(glob.glob(f'{LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}/*'))
         print(glob.glob(f'{LSCRATCH}{spec_dir[args.dataset]["download_path"]}/*'))
         print(glob.glob(LSCRATCH))
-        print(args.dataset_path)
+
+        spec_dir[args.dataset]["download_path"] = f'{LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}/'
 
         if args.dataset == 'food101':
             args.dataset_path = args.dataset_path + '/' + spec_dir[args.dataset]["download_path"].split("/")[-1]
@@ -462,14 +464,14 @@ def select_dataset(args):
         ds_train = data_dir[args.dataset](
             spec_dir[args.dataset]["download_path"],
             transform=train_transform,
-            download=True,
+            download=False,
             **spec_dir[args.dataset]["train"],
         )
 
         ds_val = data_dir[args.dataset](
             spec_dir[args.dataset]["download_path"],
             transform=val_transform,
-            download=True,
+            download=False,
             **spec_dir[args.dataset]["test"],
         )
     else:
@@ -725,7 +727,7 @@ def select_transform(args, ds_train):
         args.crop_size,
         norm,
         vars(args).get('magphase') if vars(args).get('magphase') is not None else False,
-        args.symlog,
+        args.symlog if vars(args).get('symlog') else False,
         shearlets,
     )
 

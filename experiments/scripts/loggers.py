@@ -58,7 +58,7 @@ def log_latency(args, model, train_loader):
     channels = 3 if args.experiment_type == "baseline" else channels
 
     model = model.to(torch.cuda.current_device())
-    input = torch.randn(1, channels, args.crop_size, args.crop_size).to(torch.cuda.current_device())
+    input = torch.randn(4, channels, args.crop_size, args.crop_size).to(torch.cuda.current_device())
     start_time = time.perf_counter()
     result = model(input)
     end_time = time.perf_counter()

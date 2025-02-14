@@ -77,13 +77,13 @@ spec_dir = {
         "train": {"train": True},
         "test": {"train": False},
         "classes": 10,
-        "download_path": "./",  # "/ourdisk/hpc/ai2es/datasets/CIFAR100",
+        "download_path": "/ourdisk/hpc/ai2es/datasets/CIFAR100",
     },
     "cifar100": {
         "train": {"train": True},
         "test": {"train": False},
         "classes": 100,
-        "download_path": "./",  # "/ourdisk/hpc/ai2es/datasets/CIFAR10",
+        "download_path": "/ourdisk/hpc/ai2es/datasets/CIFAR10",
     },
 }
 
