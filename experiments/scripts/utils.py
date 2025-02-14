@@ -8,6 +8,9 @@ from .config import data_dir, spec_dir, model_dir, pooling_dir
 from torchvision import transforms
 from torchvision.transforms import v2
 from itertools import cycle
+import glob
+import time
+from pathlib import Path
 
 from shearletNN.shearlet_utils import ShearletTransformLoader
 from shearletNN.shearlets import getcomplexshearlets2D
@@ -281,6 +284,42 @@ class RepeatLoader:
         for b, i in zip(cycle(self.loader), range(self.batches)):
             yield b
 
+def move_data_to_lscratch(rank, args):
+    start = time.time()
+
+    if rank == 0:
+        LSCRATCH = os.environ['LSCRATCH'] + '/'
+        os.mkdir(f'{LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}')
+        os.system(f'scp -r {spec_dir[args.dataset]["download_path"]}/* {LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}')
+
+        print(glob.glob(f'{LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}/*.tar.gz'))
+        print(glob.glob(LSCRATCH))
+
+        for path in glob.glob(f'{LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}/*.tar.gz'):
+            os.system(f'tar -xzf {path} -C {LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}/')
+
+        for path in glob.glob(f'{LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}/*.tar'):
+            os.system(f'tar -xf {path} -C {LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}/')
+        
+        print(glob.glob(f'{LSCRATCH}{spec_dir[args.dataset]["download_path"].split("/")[-1]}/*'))
+        print(glob.glob(f'{LSCRATCH}{spec_dir[args.dataset]["download_path"]}/*'))
+        print(glob.glob(LSCRATCH))
+        print(args.dataset_path)
+
+        if args.dataset == 'food101':
+            args.dataset_path = args.dataset_path + '/' + spec_dir[args.dataset]["download_path"].split("/")[-1]
+
+        Path(os.path.join('/scratch/jroth/', f'done_{os.environ["SLURM_JOB_ID"]}')).touch()
+
+    else:
+        while not os.path.isfile(os.path.join('/scratch/jroth/', f'done_{os.environ["SLURM_JOB_ID"]}')):
+            time.sleep(10)
+        while os.path.getmtime(os.path.join('/scratch/jroth/', f'done_{os.environ["SLURM_JOB_ID"]}')) < (start + 10):
+            time.sleep(10)
+    
+    print('data unzipped')
+
+
 ### data processing utility functions (move to the shearlets package probably)
 
 
@@ -353,19 +392,6 @@ def loader_mean_cov(loader):
 
 
 ### model modification utility functions
-
-
-def linearleaves(module):
-    # returns a list of pairs of (parent, submodule_name) pairs for all submodule leaves of the current module
-    if isinstance(module, torch.nn.Linear):
-        return [(module, None)]
-
-    linear_children = []
-    for name, mod in module.named_modules():
-        if isinstance(mod, torch.nn.Linear):
-            linear_children.append((name, module))
-    return linear_children
-
 
 def linearleaves(module):
     # returns a list of pairs of (parent, submodule_name) pairs for all submodule leaves of the current module
