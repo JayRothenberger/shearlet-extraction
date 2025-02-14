@@ -9,31 +9,39 @@ def wandb_init(args):
     wandb.init('ai2es', args.project, config=vars(args), name=f'{args.experiment_type} {args.dataset}')
 
 def log_data_histograms(args, train_loader):
+    channels = 2 * 3 * args.n_shearlets if args.experiment_type == "shearlet" else 6
+    channels = 3 if args.experiment_type == "baseline" else channels
+    
     for x, y in tqdm(train_loader):
         assert list(x.shape) == [
             args.batch_size,
-            2 * 3 * args.n_shearlets if args.experiment_type == "shearlet" else 6,
+            channels,
             args.crop_size,
             args.crop_size,
         ], x.shape
         assert x.dtype == torch.float32, x.dtype
 
         plt.imshow(x[0].sum(0).cpu().numpy())
-        plt.show()
         fig = plt.gcf()
         wandb.log({'sample image': wandb.Image(fig)})
+        plt.clf()
+
         plt.hist(x[:, :x.shape[1] // 2].flatten().cpu().numpy(), bins=1023, range=[-5, 5])
-        plt.show()
         fig = plt.gcf()
         wandb.log({'first component histogram (real or magnitude)': wandb.Image(fig)})
+        plt.clf()
+
         plt.hist(x[:, x.shape[1] // 2:].flatten().cpu().numpy(), bins=1023, range=[-5, 5])
-        plt.show()
         fig = plt.gcf()
         wandb.log({'second component histogram (imaginary or phase)': wandb.Image(fig)})
-        var = torch.var(x, dim=(0, 1))
-        plt.imshow(var > 0)
+        plt.clf()
+
+        var = torch.var(x, dim=(0, 1)).cpu().numpy()
+        plt.imshow(var > 0, vmax=1, vmin=0)
         fig = plt.gcf()
         wandb.log({'pixel-wise variance': wandb.Image(fig)})
+        plt.clf()
+
         break
 
 def log_flops_params(args, model, train_loader):

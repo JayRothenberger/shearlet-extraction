@@ -77,13 +77,13 @@ spec_dir = {
         "train": {"train": True},
         "test": {"train": False},
         "classes": 10,
-        "download_path": "/ourdisk/hpc/ai2es/datasets/CIFAR100",
+        "download_path": "./",  # "/ourdisk/hpc/ai2es/datasets/CIFAR100",
     },
     "cifar100": {
         "train": {"train": True},
         "test": {"train": False},
         "classes": 100,
-        "download_path": "/ourdisk/hpc/ai2es/datasets/CIFAR10",
+        "download_path": "./",  # "/ourdisk/hpc/ai2es/datasets/CIFAR10",
     },
 }
 
@@ -102,59 +102,61 @@ high_res_config = {
     "default": {"key": "crop_size", "values": [16, 32, 64, 128], "default": None},
 }
 
-dataset_config = (
-    {
-        "key": "pixel_norm",
-        "values": [True, False],
+dataset_config = {
+    "key": "pixel_norm",
+    "values": [True, False],
+    "default": {
+        "key": "dataset",
+        "values": [
+            # "caltech101",
+            # "caltech256",
+            # "food101",
+            # "inat2021",
+            "cifar10",
+            # "cifar100",
+        ],
+        "default": high_res_config,
+        "cifar10": low_res_config,
+        # "cifar100": low_res_config,
+    },
+    False: {
+        "key": "channel_norm",
+        "values": [True],
         "default": {
             "key": "dataset",
             "values": [
-                "caltech101",
-                "caltech256",
-                "food101",
-                "inat2021",
+                # "caltech101",
+                # "caltech256",
+                # "food101",
+                # "inat2021",
                 "cifar10",
-                "cifar100",
+                # "cifar100",
             ],
             "default": high_res_config,
             "cifar10": low_res_config,
-            "cifar100": low_res_config,
+            # "cifar100": low_res_config,
         },
-        False: {
-            "channel_norm": "channel_norm",
-            "values": [True, False],
-            "default": {
-                "key": "dataset",
-                "values": [
-                    "caltech101",
-                    "caltech256",
-                    "food101",
-                    "inat2021",
-                    "cifar10",
-                    "cifar100",
-                ],
-                "default": high_res_config,
-                "cifar10": low_res_config,
-                "cifar100": low_res_config,
-        },
-        }
     },
-)
+}
 
 optimization_config = {
     "key": "learning_rate",
     "values": [1e-3, 1e-4],
     "default": {
         "key": "batch_size",
-        "values": [64, 128, 256, 512],
+        "values": [128],
         "default": {
-            "key": "patience", 
+            "key": "patience",
             "values": [25],
             "default": {
                 "key": "spectral_norm",
-                "values": [True, False],
-                "default": dataset_config
-            }
+                "values": [False],
+                "default": {
+                    "key": "accumulate",
+                    "values": [2],
+                    "default": dataset_config,
+                },
+            },
         },
     },
 }
@@ -164,13 +166,13 @@ deit_config = {
     "values": ["gelu"],
     "default": {
         "key": "patch_size",
-        "values": [1, 2, 4, 16],
+        "values": [1, 2, 4, 8],  # patch size cannot be the same as image size
         "default": {
             "key": "num_heads",
             "values": [3, 6, 12],
             "default": {
                 "key": "embed_dim",
-                "values": [192, 384, 768],
+                "values": [192, 384],
                 "default": {
                     "key": "conv_first",
                     "values": [True, False],
@@ -200,13 +202,9 @@ model_config = {
 }
 
 preprocessing_config = {
-    "key": "normalize",
+    "key": "magphase",
     "values": [True, False],
-    "default": {
-        "key": "magphase",
-        "values": [True, False],
-        "default": {"key": "symlog", "values": [True, False], "default": model_config},
-    },
+    "default": {"key": "symlog", "values": [True], "default": model_config},
 }
 
 experiment_config = {
@@ -217,11 +215,11 @@ experiment_config = {
         "baseline": {
             "key": "resize_to_crop",
             "values": [True, False],
-            "default": model_config
+            "default": model_config,
         },
         "shearlet": {
             "key": "n_shearlets",
-            "value": [1, 3, 10],
+            "values": [1, 3, 10],
             "default": preprocessing_config,
         },
         "fourier": preprocessing_config,

@@ -29,14 +29,14 @@ def model_run(
     best_state = None
     epochs_since_improvement = 0
 
-    if os.environ.get("WORLD_SIZE") > 1:
+    if int(os.environ.get("WORLD_SIZE")) > 1:
         print(
             "because the world size is greater than 1 I assume you want to aggregate performance metrics across ranks"
         )
         print("please make sure each rank is running the training process")
 
-    test = test_ddp if os.environ.get("WORLD_SIZE") > 1 else test
-    train = train_ddp if os.environ.get("WORLD_SIZE") > 1 else train
+    test_fn = test_ddp if int(os.environ.get("WORLD_SIZE")) > 1 else test
+    train_fn = train_ddp if int(os.environ.get("WORLD_SIZE")) > 1 else train
 
     print("training model...")
     for epoch in range(epochs):
@@ -53,7 +53,7 @@ def model_run(
             "optimizer": optimizer,
             "accumulate": accumulate,
         }
-        train(**train_args)
+        train_fn(**train_args)
         gc.collect()
         test_args = {
             "rank": int(os.environ.get("RANK"))
@@ -65,9 +65,18 @@ def model_run(
             "optimizer": optimizer,
             "accumulate": accumulate,
         }
-        test(**test_args)
-        val_loss, val_acc = test(model, val_loader)
-        train_loss, train_acc = test(model, train_loader)
+        val_loss, val_acc = test_fn(**test_args)
+        test_args = {
+            "rank": int(os.environ.get("RANK"))
+            if os.environ.get("RANK") is not None
+            else None,
+            "model": model.to(torch.cuda.current_device()),
+            "loader": val_loader,
+            "loss_fn": loss_fn,
+            "optimizer": optimizer,
+            "accumulate": accumulate,
+        }
+        train_loss, train_acc = test_fn(**test_args)
 
         wandb.log(
             {
@@ -110,13 +119,6 @@ def train(model, loader, loss_fn, optimizer, accumulate=1, **kwargs):
         l.backward()
         if i % accumulate == (accumulate - 1):
             optimizer.step()
-
-    wandb.log(
-        {
-            "train acc": epoch_accuracy(loader),
-            "train loss": (loss * accumulate) / total,
-        }
-    )
 
 
 def accuracy(output, target, topk=(1,)):
@@ -164,13 +166,6 @@ def test(model, loader, loss_fn, **kwargs):
             total += target.shape[0]
         test_loss /= total
         test_losses.append(test_loss)
-        print(
-            "\nTest set: Avg. loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n".format(
-                test_loss, correct, total, 100.0 * correct / total
-            )
-        )
-
-    wandb.log({"val acc": correct / total, "val loss": test_loss})
 
     return test_losses[-1], correct / total
 
@@ -210,26 +205,6 @@ def train_ddp(rank, model, loader, loss_fn, optimizer, accumulate=1, **kwargs):
     train_acc = ddp_loss[1] / ddp_loss[2]
     train_loss = ddp_loss[0] / ddp_loss[2]
 
-    if rank == 0:
-        accuracy = 100 * (ddp_loss[1] / ddp_loss[2])
-        avg_loss = ddp_loss[0] / ddp_loss[2]
-
-        print(
-            "Accuracy: {:.2f}% \tAverage Loss: {:.6f}".format(
-                accuracy,
-                avg_loss,
-            )
-        )
-
-        wandb.log(
-            {
-                "train acc": accuracy,
-                "train loss": avg_loss,
-            }
-        )
-
-        gc.collect()
-
     return train_acc, train_loss
 
 
@@ -258,21 +233,6 @@ def test_ddp(rank, model, loader, loss_fn, **kwargs):
     test_acc = ddp_loss[1] / ddp_loss[2]
     test_loss = ddp_loss[0] / ddp_loss[2]
     test_jaccard = ddp_loss[3] / ddp_loss[4]
-
-    if rank == 0:
-        accuracy = 100 * (ddp_loss[1] / ddp_loss[2])
-        avg_loss = ddp_loss[0] / ddp_loss[2]
-
-        print(
-            "\tAccuracy: {:.2f}% \tAverage Loss: {:.6f}".format(
-                accuracy,
-                avg_loss,
-            )
-        )
-
-        wandb.log({"val acc": accuracy, "val loss": avg_loss})
-
-        gc.collect()
 
     return test_acc, test_jaccard, test_loss
 
@@ -318,12 +278,8 @@ class RepeatLoader:
         self.batches = batches
 
     def __iter__(self):
-        for i, b in enumerate(cycle(self.loader)):
-            if i < self.batches:
-                yield b
-            else:
-                raise StopIteration
-
+        for b, i in zip(cycle(self.loader), range(self.batches)):
+            yield b
 
 ### data processing utility functions (move to the shearlets package probably)
 
@@ -453,7 +409,7 @@ def repeat3(x):
 
 
 def select_dataset(args):
-    image_size = args.crop_size if args.get('resize_to_crop') else args.image_size
+    image_size = args.crop_size if vars(args).get('resize_to_crop') else args.image_size
 
     train_transform = v2.Compose(
         [
@@ -478,32 +434,30 @@ def select_dataset(args):
     # selector for the type of dataset we will train on.  We will need to download it to a special directory from the args to make use of lscratch
     if spec_dir[args.dataset]["train"] is not None and spec_dir[args.dataset]["test"]:
         ds_train = data_dir[args.dataset](
-            args.dataset_path,
+            spec_dir[args.dataset]["download_path"],
             transform=train_transform,
-            download=False,
+            download=True,
             **spec_dir[args.dataset]["train"],
         )
 
         ds_val = data_dir[args.dataset](
-            args.dataset_path,
+            spec_dir[args.dataset]["download_path"],
             transform=val_transform,
-            download=False,
+            download=True,
             **spec_dir[args.dataset]["test"],
         )
     else:
         ds_train = data_dir[args.dataset](
-            args.dataset_path, transform=train_transform, download=False
+            spec_dir[args.dataset]["download_path"], transform=train_transform, download=False
         )
         ds_train = IndexSubsetDataset(
             ds_train, sum([list(range(len(ds_train)))[i::5] for i in range(1, 5)], [])
         )
 
         ds_val = data_dir[args.dataset](
-            args.dataset_path, transform=val_transform, download=False
+            spec_dir[args.dataset]["download_path"], transform=val_transform, download=False
         )
         ds_val = IndexSubsetDataset(ds_val, list(range(len(ds_val)))[0::5])
-
-    ds_train = RepeatLoader(ds_train, 512)
 
     return ds_train, ds_val
 
@@ -513,10 +467,11 @@ def select_model(args):
         model_fn = model_dir[args.model]
 
         in_chans = 2 * 3 * args.n_shearlets if args.experiment_type == "shearlet" else 6
+        in_chans = 3 if args.experiment_type == "baseline" else in_chans
 
         model_kwargs = {
             "img_size": args.crop_size,
-            "in_chans": in_chans,
+            "in_dim": in_chans,
         }
 
         model = model_fn(**model_kwargs)
@@ -524,7 +479,11 @@ def select_model(args):
     elif args.model_type == "deit":
         model_fn = model_dir[args.model_type]
         in_chans = 2 * 3 * args.n_shearlets if args.experiment_type == "shearlet" else 6
+        in_chans = 3 if args.experiment_type == "baseline" else in_chans
         deit_in_chans = in_chans if not args.conv_first else in_chans * 4
+
+        assert isinstance(args.crop_size, int), type(args.crop_size)
+        assert isinstance(args.patch_size, int), type(args.patch_size)
 
         model_kwargs = {
             "embed_dim": args.embed_dim,
@@ -536,7 +495,7 @@ def select_model(args):
 
         torch.set_float32_matmul_precision("high")
 
-        model = model_fn(model_kwargs)
+        model = model_fn(**model_kwargs)
 
         if args.conv_first:
             model = torch.nn.Sequential(
@@ -545,10 +504,12 @@ def select_model(args):
     else:
         raise NotImplementedError(f"unrecognized model type: {args.model_type}")
 
-    if args.spectral_normalized:
+    if vars(args).get('spectral_normalize'):
         model = spectral_normalize(model)
     else:
         model = torch.compile(model)
+
+    return model
 
 
 class PoolingTransform:
@@ -560,7 +521,7 @@ class PoolingTransform:
         self.norm = norm
         self.magphase = magphase
         self.symlog = symlog
-        self.shearlets = shearlets.to(torch.cuda.current_device())
+        self.shearlets = shearlets.to(torch.cuda.current_device()) if shearlets is not None else None
 
     def __call__(self, batch):
         img = self.fn(
@@ -600,7 +561,7 @@ def to_real_imag(img):
 
 
 def to_symlog_real_imag(img):
-    return torch.symlog(img.real), torch.symlog(img.imag)
+    return symlog(img.real), symlog(img.imag)
 
 
 def loader_min_max(train_loader):
@@ -628,10 +589,7 @@ class MinMaxNormalizer:
         self.diff = self.max - self.min
 
     def __call__(self, batch):
-        img = self.fn(
-            batch.to(torch.cuda.current_device()), self.shearlets, self.crop_size
-        )
-
+        img = batch.to(torch.cuda.current_device())
         img = (2 * (img - self.min) / self.diff) - 1
 
         return img
@@ -697,7 +655,10 @@ def get_shearlets(args):
 
 
 def select_transform(args, ds_train):
-    shearlets = get_shearlets(args)
+    shearlets = get_shearlets(args) if vars(args).get('n_shearlets') is not None else None
+
+    if args.experiment_type == "baseline":
+        return torch.nn.Identity()
 
     train_loader = torch.utils.data.DataLoader(
         ds_train, batch_size=args.batch_size, shuffle=True, num_workers=0
@@ -706,25 +667,25 @@ def select_transform(args, ds_train):
     def pooling_transform(img):
         img = pooling_dir[args.experiment_type](
             img.to(torch.cuda.current_device()),
-            shearlets.to(torch.cuda.current_device()),
+            shearlets.to(torch.cuda.current_device()) if shearlets is not None else None,
             args.crop_size,
         )
-
-        if args.magphase:
-            if args.symlog:
+        
+        if vars(args).get('magphase'):
+            if vars(args).get('symlog'):
                 return torch.cat(to_symlog_magphase(img), 1)
             return torch.cat(to_magphase(img), 1)
         else:
-            if args.symlog:
+            if vars(args).get('symlog'):
                 return torch.cat(to_symlog_real_imag(img), 1)
             return torch.cat(to_real_imag(img), 1)
 
     train_loader = ShearletTransformLoader(train_loader, pooling_transform)
 
-    if args.channel_norm:
+    if vars(args).get('channel_norm'):
         mean, cov = loader_mean_cov(tqdm(train_loader))
         norm = Normalizer(mean, cov)
-    elif args.pixel_norm:
+    elif vars(args).get('pixel_norm'):
         a_max, a_min = loader_min_max(tqdm(train_loader))
         norm = MinMaxNormalizer(a_min, a_max)
     else:
@@ -734,7 +695,7 @@ def select_transform(args, ds_train):
         pooling_dir[args.experiment_type],
         args.crop_size,
         norm,
-        args.magphase,
+        vars(args).get('magphase') if vars(args).get('magphase') is not None else False,
         args.symlog,
         shearlets,
     )

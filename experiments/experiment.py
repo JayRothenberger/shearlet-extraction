@@ -9,8 +9,8 @@ import torch
 import os
 import argparse
 
-from scripts.utils import select_dataset, select_model, select_transform, model_run
-from scripts.loggers import wandb_init
+from scripts.utils import select_dataset, select_model, select_transform, model_run, RepeatLoader
+from scripts.loggers import wandb_init, log_data_histograms, log_flops_params, log_latency, log_model_throughput
 
 
 def training_process(args, rank, world_size):
@@ -41,17 +41,15 @@ def training_process(args, rank, world_size):
 
     val_loader = ShearletTransformLoader(val_loader, shearlet_transform)
 
-    train_loader = torch.utils.data.DataLoader(
-        ds_train, batch_size=args.batch_size, shuffle=True, num_workers=0
-    )
-
-    val_loader = torch.utils.data.DataLoader(
-        ds_val, batch_size=args.batch_size, shuffle=False
-    )
     model = select_model(args)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 240)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
+
+    log_data_histograms(args, train_loader)
+    # log_flops_params(args, model, train_loader)
+    log_latency(args, model, train_loader)
+    log_model_throughput(model, train_loader)
 
     print("training model...")
 
@@ -61,7 +59,7 @@ def training_process(args, rank, world_size):
         scheduler,
         args.epochs,
         args.accumulate,
-        train_loader,
+        RepeatLoader(train_loader, 512 * args.accumulate),
         val_loader,
         args.patience,
         torch.nn.CrossEntropyLoss(),
@@ -102,7 +100,7 @@ def main(args, rank, world_size):
 
     agent = sync_parameters(rank, agent)
 
-    args = agent.to_namespace(agent.combination)
+    args = agent.update_namespace(args)
 
     states, metric = training_process(args, rank, world_size)
 
