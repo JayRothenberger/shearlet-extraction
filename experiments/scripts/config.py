@@ -104,18 +104,40 @@ high_res_config = {
 
 dataset_config = (
     {
-        "key": "dataset",
-        "values": [
-            "caltech101",
-            "caltech256",
-            "food101",
-            "inat2021",
-            "cifar10",
-            "cifar100",
-        ],
-        "default": high_res_config,
-        "cifar10": low_res_config,
-        "cifar100": low_res_config,
+        "key": "pixel_norm",
+        "values": [True, False],
+        "default": {
+            "key": "dataset",
+            "values": [
+                "caltech101",
+                "caltech256",
+                "food101",
+                "inat2021",
+                "cifar10",
+                "cifar100",
+            ],
+            "default": high_res_config,
+            "cifar10": low_res_config,
+            "cifar100": low_res_config,
+        },
+        False: {
+            "channel_norm": "channel_norm",
+            "values": [True, False],
+            "default": {
+                "key": "dataset",
+                "values": [
+                    "caltech101",
+                    "caltech256",
+                    "food101",
+                    "inat2021",
+                    "cifar10",
+                    "cifar100",
+                ],
+                "default": high_res_config,
+                "cifar10": low_res_config,
+                "cifar100": low_res_config,
+        },
+        }
     },
 )
 
@@ -125,13 +147,21 @@ optimization_config = {
     "default": {
         "key": "batch_size",
         "values": [64, 128, 256, 512],
-        "default": dataset_config,
+        "default": {
+            "key": "patience", 
+            "values": [25],
+            "default": {
+                "key": "spectral_norm",
+                "values": [True, False],
+                "default": dataset_config
+            }
+        },
     },
 }
 
 deit_config = {
     "key": "activation",
-    "values": [],
+    "values": ["gelu"],
     "default": {
         "key": "patch_size",
         "values": [1, 2, 4, 16],
@@ -184,6 +214,11 @@ experiment_config = {
         "key": "experiment_type",
         "values": ["shearlet", "fourier", "baseline"],
         "default": model_config,
+        "baseline": {
+            "key": "resize_to_crop",
+            "values": [True, False],
+            "default": model_config
+        },
         "shearlet": {
             "key": "n_shearlets",
             "value": [1, 3, 10],

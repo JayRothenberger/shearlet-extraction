@@ -4,21 +4,13 @@ import gc
 from tqdm import tqdm
 import torch.distributed as dist
 import os
-from config import data_dir, spec_dir, model_dir, pooling_dir
+from .config import data_dir, spec_dir, model_dir, pooling_dir
 from torchvision import transforms
 from torchvision.transforms import v2
 from itertools import cycle
 
 from shearletNN.shearlet_utils import ShearletTransformLoader
 from shearletNN.shearlets import getcomplexshearlets2D
-from shearletNN.shearlet_utils import (
-    fourier_pooling_transform,
-    image_fourier_pooling_transform,
-    shearlet_pooling_transform,
-)
-
-import matplotlib.pyplot as plt
-
 
 # function that trains the model
 def model_run(
@@ -461,10 +453,12 @@ def repeat3(x):
 
 
 def select_dataset(args):
+    image_size = args.crop_size if args.get('resize_to_crop') else args.image_size
+
     train_transform = v2.Compose(
         [
             transforms.RandomResizedCrop(
-                (args.image_size, args.image_size), scale=(0.5, 1.0)
+                (image_size, image_size), scale=(0.5, 1.0)
             ),
             # transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
@@ -475,7 +469,7 @@ def select_dataset(args):
 
     val_transform = v2.Compose(
         [
-            transforms.Resize((args.image_size, args.image_size)),
+            transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
             repeat3,
             # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -508,8 +502,6 @@ def select_dataset(args):
             args.dataset_path, transform=val_transform, download=False
         )
         ds_val = IndexSubsetDataset(ds_val, list(range(len(ds_val)))[0::5])
-
-    opt_steps = len(ds_train) // (args.batch_size * int(os.environ["WORLD_SIZE"]))
 
     ds_train = RepeatLoader(ds_train, 512)
 
@@ -560,7 +552,9 @@ def select_model(args):
 
 
 class PoolingTransform:
-    def __init__(self, fn, crop_size, norm, magphase=False, symlog=False, shearlets=None):
+    def __init__(
+        self, fn, crop_size, norm, magphase=False, symlog=False, shearlets=None
+    ):
         self.fn = fn
         self.crop_size = crop_size
         self.norm = norm
@@ -569,7 +563,9 @@ class PoolingTransform:
         self.shearlets = shearlets.to(torch.cuda.current_device())
 
     def __call__(self, batch):
-        img = self.fn(batch.to(torch.cuda.current_device()), self.shearlets, self.crop_size)
+        img = self.fn(
+            batch.to(torch.cuda.current_device()), self.shearlets, self.crop_size
+        )
 
         if self.magphase:
             if self.symlog:
@@ -582,7 +578,7 @@ class PoolingTransform:
 
 
 def sync_picklable_object(rank, object):
-    pass # TODO: pull some of the code from dahps to do this
+    pass  # TODO: pull some of the code from dahps to do this
 
 
 def to_magphase(img):
@@ -591,17 +587,21 @@ def to_magphase(img):
 
     return mag, phase
 
+
 def to_symlog_magphase(img):
     phase = torch.angle(img) / torch.math.pi
     mag = torch.sqrt((img.real**2) + (img.imag**2))
 
     return mag, phase
 
+
 def to_real_imag(img):
     return img.real, img.imag
 
+
 def to_symlog_real_imag(img):
     return torch.symlog(img.real), torch.symlog(img.imag)
+
 
 def loader_min_max(train_loader):
     a_max = None
@@ -625,10 +625,12 @@ class MinMaxNormalizer:
     def __init__(self, min, max):
         self.min = min.to(torch.cuda.current_device())
         self.max = max.to(torch.cuda.current_device())
-        self.diff = (self.max - self.min)
+        self.diff = self.max - self.min
 
     def __call__(self, batch):
-        img = self.fn(batch.to(torch.cuda.current_device()), self.shearlets, self.crop_size)
+        img = self.fn(
+            batch.to(torch.cuda.current_device()), self.shearlets, self.crop_size
+        )
 
         img = (2 * (img - self.min) / self.diff) - 1
 
@@ -674,10 +676,8 @@ class Normalizer:
 
         return complex_inputs_hat
 
-# returns the appropriate type of input transform for the model
-# for runs with multiple ranks we will need to synchronize the transform across the ranks
-# functions that are not defined on the top level of a file are not picklable
-def select_transform(args, ds_train):
+
+def get_shearlets(args):
     rows, cols = args.image_size, args.image_size
 
     shearlets, shearletIdxs, RMS, dualFrameWeights = getcomplexshearlets2D(
@@ -691,14 +691,24 @@ def select_transform(args, ds_train):
         gaussian_eff_support=args.image_size,
     )
     shearlets = torch.tensor(shearlets).permute(2, 0, 1).type(torch.complex128).to(0)
-    shearlets = shearlets[:args.n_shearlets]
+    shearlets = shearlets[: args.n_shearlets]
+
+    return shearlets
+
+
+def select_transform(args, ds_train):
+    shearlets = get_shearlets(args)
 
     train_loader = torch.utils.data.DataLoader(
         ds_train, batch_size=args.batch_size, shuffle=True, num_workers=0
     )
 
     def pooling_transform(img):
-        img = pooling_dir[args.experiment_type](img.to(0), shearlets.to(0), args.crop_size)
+        img = pooling_dir[args.experiment_type](
+            img.to(torch.cuda.current_device()),
+            shearlets.to(torch.cuda.current_device()),
+            args.crop_size,
+        )
 
         if args.magphase:
             if args.symlog:
@@ -720,4 +730,17 @@ def select_transform(args, ds_train):
     else:
         norm = torch.nn.Identity()
 
-    return PoolingTransform(pooling_dir[args.experiment_type], args.crop_size, norm, args.magphase, args.symlog, shearlets)
+    return PoolingTransform(
+        pooling_dir[args.experiment_type],
+        args.crop_size,
+        norm,
+        args.magphase,
+        args.symlog,
+        shearlets,
+    )
+
+def setup(rank, world_size):
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+def cleanup():
+    dist.destroy_process_group()
