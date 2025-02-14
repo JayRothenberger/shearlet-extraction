@@ -96,7 +96,7 @@ def model_run(
             best_state = model.state_dict()
         else:
             if epochs_since_improvement >= patience:
-                return model
+                return best_state, best_val_acc
             epochs_since_improvement += 1
 
         scheduler.step(val_loss)
