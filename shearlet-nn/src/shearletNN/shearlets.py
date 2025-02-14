@@ -73,7 +73,7 @@ def getcomplexshearlets2D(
 
 	normalize=True
 	_, _coneh, _ks =  cone_orientation(shear_level)
-	shearlets = np.zeros((rows, cols,n_shearlets), dtype=np.complex_)
+	shearlets = np.zeros((rows, cols,n_shearlets), dtype=np.complex128)
 	shearletidx = []
 	# Computing shearlets
 	for j, scale in enumerate(scales):

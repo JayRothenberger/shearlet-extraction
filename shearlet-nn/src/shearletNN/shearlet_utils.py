@@ -142,8 +142,6 @@ def batched_hartley_pooled(X, shearlets, patch_size=32):
 
 def batched_fourier_pooled(X, shearlets, patch_size=32):
     fftlib = torch.fft
-
-    shearlets = shearlets.type(torch.complex128).to(torch.cuda.current_device())
     X = X.to(torch.cuda.current_device())
     # get data in frequency domain
     Xfreq = fftlib.fftshift(
@@ -172,8 +170,6 @@ def batched_fourier_pooled(X, shearlets, patch_size=32):
 
 def batched_image_fourier_pooled(X, shearlets, patch_size=32):
     fftlib = torch.fft
-
-    shearlets = shearlets.type(torch.complex128).to(torch.cuda.current_device())
     X = X.to(torch.cuda.current_device())
     # get data in frequency domain
     Xfreq = fftlib.fftshift(
@@ -202,7 +198,6 @@ def batched_image_fourier_pooled(X, shearlets, patch_size=32):
 
 def batched_shearlet_pooled(X, shearlets, patch_size=32):
     fftlib = torch.fft
-
     shearlets = shearlets.type(torch.complex128).to(torch.cuda.current_device())
     X = X.to(torch.cuda.current_device())
     # get data in frequency domain
