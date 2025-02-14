@@ -92,7 +92,7 @@ spec_dir = {
 # handles the low resolution datasets
 low_res_config = {
     "key": "image_size",
-    "values": [64, 128],
+    "values": [64],
     "default": {"key": "crop_size", "values": [16, 32, 64], "default": None},
 }
 # handles the high resolution datasets
@@ -141,7 +141,7 @@ dataset_config = {
 
 optimization_config = {
     "key": "learning_rate",
-    "values": [1e-3, 1e-4],
+    "values": [1e-3],
     "default": {
         "key": "batch_size",
         "values": [128],
@@ -166,16 +166,16 @@ deit_config = {
     "values": ["gelu"],
     "default": {
         "key": "patch_size",
-        "values": [1, 2, 4, 8],  # patch size cannot be the same as image size
+        "values": [2],  # patch size cannot be the same as image size
         "default": {
             "key": "num_heads",
-            "values": [3, 6, 12],
+            "values": [12],
             "default": {
                 "key": "embed_dim",
-                "values": [192, 384],
+                "values": [192],
                 "default": {
                     "key": "conv_first",
-                    "values": [True, False],
+                    "values": [False],
                     "default": optimization_config,
                 },
             },
@@ -203,7 +203,7 @@ model_config = {
 
 preprocessing_config = {
     "key": "magphase",
-    "values": [True, False],
+    "values": [True],
     "default": {"key": "symlog", "values": [True], "default": model_config},
 }
 

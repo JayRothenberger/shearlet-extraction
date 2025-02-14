@@ -63,7 +63,7 @@ def model_run(
             if os.environ.get("RANK") is not None
             else None,
             "model": model.to(torch.cuda.current_device()),
-            "loader": train_loader,
+            "loader": val_loader,
             "loss_fn": loss_fn,
             "optimizer": optimizer,
             "accumulate": accumulate,
@@ -74,7 +74,7 @@ def model_run(
             if os.environ.get("RANK") is not None
             else None,
             "model": model.to(torch.cuda.current_device()),
-            "loader": val_loader,
+            "loader": train_loader,
             "loss_fn": loss_fn,
             "optimizer": optimizer,
             "accumulate": accumulate,
