@@ -104,7 +104,7 @@ high_res_config = {
 
 dataset_config = {
     "key": "pixel_norm",
-    "values": [True, False],
+    "values": [True],
     "default": {
         "key": "dataset",
         "values": [

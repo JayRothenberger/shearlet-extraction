@@ -582,7 +582,7 @@ def to_magphase(img):
 
 def to_symlog_magphase(img):
     phase = torch.angle(img) / torch.math.pi
-    mag = torch.sqrt((img.real**2) + (img.imag**2))
+    mag = symlog(torch.sqrt((img.real**2) + (img.imag**2)))
 
     return mag, phase
 
