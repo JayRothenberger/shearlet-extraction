@@ -3,7 +3,7 @@ from shearletNN.shearlet_utils import ShearletTransformLoader
 from scripts.utils import setup, cleanup
 from dahps import DistributedAsynchronousRandomSearch as DARS
 from dahps.torch_utils import sync_parameters
-from scripts.config import experiment_config as config
+from scripts.config import dropout_config as config
 
 import torch
 import os
@@ -93,14 +93,14 @@ def create_parser():
     parser.add_argument(
         "--path",
         type=str,
-        default="./hp_test",
+        default="./drop_test1",
         help="path for the hyperparameter search data",
     )
     parser.add_argument(
         "--project",
         type=str,
-        default="shearletnn test",
-        help="path for the hyperparameter search data",
+        default="shearletnn-drop",
+        help="wandb project",
     )
 
     return parser

@@ -291,7 +291,7 @@ def training_process(args):
     # weights and biases initialization process
 
     wandb.init(
-        project="Shearlet Image Processing",
+        project="Shearlet Image Processing - Drop Test",
         entity="ai2es",
         name=f"{rank} {device} {torch.cuda.current_device()} : {args.model_type}",
         config={"args": vars(args)},

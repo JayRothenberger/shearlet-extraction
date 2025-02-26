@@ -16,6 +16,8 @@
 #SBATCH --mail-type=ALL
 #SBATCH --chdir=/ourdisk/hpc/ai2es/jroth/shearlet-extraction/experiments/
 #SBATCH --array=[0-0]%1
+#SBATCH --exclude=c856
+#SBATCH --exclusive
 #################################################
 
 nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )

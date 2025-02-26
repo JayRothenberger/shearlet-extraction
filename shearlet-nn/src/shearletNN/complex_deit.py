@@ -23,7 +23,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from functools import partial
-from typing import Tuple
 
 from typing import Callable, List, Optional, Tuple, Union
 

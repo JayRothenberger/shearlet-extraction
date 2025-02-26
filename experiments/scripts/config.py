@@ -1,7 +1,8 @@
 import torchvision
 import ssl
 
-from shearletNN.deit import vit_models
+from shearletNN.deit import vit_models, Layer_scale_init_Block
+from functools import partial
 
 from shearletNN.complex_resnet import (
     complex_resnet18,
@@ -26,7 +27,7 @@ pooling_dir = {
 ### model registry utilities a map from string names to model classes
 
 model_dir = {
-    "deit": vit_models,
+    "deit": partial(vit_models, qkv_bias=True, block_layers=Layer_scale_init_Block),
     "complex_resnet18": complex_resnet18,
     "complex_resnet34": complex_resnet34,
     "complex_resnet50": complex_resnet50,
@@ -119,24 +120,24 @@ dataset_config = {
         "cifar10": low_res_config,
         # "cifar100": low_res_config,
     },
-    False: {
-        "key": "channel_norm",
-        "values": [True],
-        "default": {
-            "key": "dataset",
-            "values": [
-                # "caltech101",
-                # "caltech256",
-                # "food101",
-                # "inat2021",
-                "cifar10",
-                # "cifar100",
-            ],
-            "default": high_res_config,
-            "cifar10": low_res_config,
-            # "cifar100": low_res_config,
-        },
-    },
+    # False: {
+    #     "key": "channel_norm",
+    #     "values": [True],
+    #     "default": {
+    #         "key": "dataset",
+    #         "values": [
+    #             # "caltech101",
+    #             # "caltech256",
+    #             # "food101",
+    #             # "inat2021",
+    #             "cifar10",
+    #             # "cifar100",
+    #         ],
+    #         "default": high_res_config,
+    #         "cifar10": low_res_config,
+    #         # "cifar100": low_res_config,
+    #     },
+    # },
 }
 
 optimization_config = {
@@ -169,14 +170,26 @@ deit_config = {
         "values": [2],  # patch size cannot be the same as image size
         "default": {
             "key": "num_heads",
-            "values": [12],
+            "values": [6],
             "default": {
                 "key": "embed_dim",
                 "values": [192],
                 "default": {
                     "key": "conv_first",
                     "values": [False],
-                    "default": optimization_config,
+                    "default": {
+                        "key": "drop_path_rate",
+                        "values": [0.1, 0.25, 0.5],
+                        "default": {
+                            "key": "drop_rate",
+                            "values": [0.1, 0.25, 0.5],
+                            "default":{
+                                "key": "attn_drop_rate",
+                                "values": [0.1, 0.25, 0.5],
+                                "default": optimization_config
+                            }
+                        }
+                    },
                 },
             },
         },
@@ -188,8 +201,8 @@ resnet_config = {
     "values": [
         "complex_resnet18",
         "complex_resnet34",
-        "complex_resnet50",
-        "complex_resnet101",
+        # "complex_resnet50",
+        # "complex_resnet101",
     ],
     "default": optimization_config,
 }
@@ -219,7 +232,7 @@ experiment_config = {
         },
         "shearlet": {
             "key": "n_shearlets",
-            "values": [1, 3, 10],
+            "values": [10],
             "default": preprocessing_config,
         },
         "fourier": preprocessing_config,
@@ -229,3 +242,36 @@ experiment_config = {
 }
 
 ######
+
+model_config = {
+    "key": "model_type",
+    "values": ["deit"],
+    "default": deit_config,
+}
+
+preprocessing_config = {
+    "key": "magphase",
+    "values": [True],
+    "default": {"key": "symlog", "values": [True], "default": model_config},
+}
+
+dropout_config = {
+    "root": {
+        "key": "experiment_type",
+        "values": ["shearlet", "fourier", "baseline"],
+        "default": model_config,
+        "baseline": {
+            "key": "resize_to_crop",
+            "values": [False],
+            "default": model_config,
+        },
+        "shearlet": {
+            "key": "n_shearlets",
+            "values": [10],
+            "default": preprocessing_config,
+        },
+        "fourier": preprocessing_config,
+    },
+    "check_unique": True,
+    "repetitions": 1,
+}

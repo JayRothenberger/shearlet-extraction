@@ -519,7 +519,10 @@ def select_model(args):
             "patch_size": args.patch_size,
             "img_size": args.crop_size,
             "in_chans": deit_in_chans,
-        }
+            "drop_path_rate": vars(args).get("drop_path_rate") if vars(args).get("drop_path_rate") is not None else 0.0,
+            "drop_rate": vars(args).get("drop_rate") if vars(args).get("drop_rate") is not None else 0.0,
+            "attn_drop_rate": vars(args).get("attn_drop_rate") if vars(args).get("attn_drop_rate") is not None else 0.0,        
+            }
 
         torch.set_float32_matmul_precision("high")
 
@@ -623,7 +626,7 @@ class MinMaxNormalizer:
         img = batch.to(torch.cuda.current_device())
         img = (2 * (img - self.min) / self.diff) - 1
 
-        return img
+        return torch.nan_to_num(img)
 
 
 class Normalizer:
