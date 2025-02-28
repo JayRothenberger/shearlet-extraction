@@ -484,13 +484,6 @@ class ShearletModule(torch.nn.Module):
                 ]
             )
 
-        waveletFilter = MirrorFilt(scalingFilter)
-
-        # initialize variables
-
-        # get number of scales
-        NScales = 1
-
         wedge = [None] * (
             max(shearLevels) + 1
         )  # these filters partition the frequenecy plane into different directions
@@ -645,6 +638,7 @@ class ShearletModule(torch.nn.Module):
             )
             wedge2[0] = 0  # for matlab compatibilty (saving filters as .mat files)
             filters["cone2"] = {"wedge": wedge2, "bandpass": bandpass, "lowpass": lowpass, "highlowpass": highlowpass, "lowhighpass": lowhighpass}
+
         return filters
     
     def forward(self):
