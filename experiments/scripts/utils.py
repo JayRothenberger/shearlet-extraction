@@ -114,7 +114,6 @@ def train(model, loader, loss_fn, optimizer, accumulate=1, **kwargs):
 
     for i, (X, y) in tqdm(enumerate(loader)):
         out = model(X.to(torch.cuda.current_device()))
-        optimizer.zero_grad()
         l = loss_fn(out, y.to(torch.cuda.current_device())) / accumulate
 
         loss += l.detach()
@@ -123,6 +122,7 @@ def train(model, loader, loss_fn, optimizer, accumulate=1, **kwargs):
         l.backward()
         if i % accumulate == (accumulate - 1):
             optimizer.step()
+            optimizer.zero_grad()
 
 
 def accuracy(output, target, topk=(1,)):
